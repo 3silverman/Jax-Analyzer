@@ -2,9 +2,9 @@
 """
 scripts/test_property.py
 
-End-to-end smoke test — Dellwood triplex.
-Runs a hardcoded property through the entire pipeline (no live API calls)
-and prints the full deal card to the terminal.
+End-to-end smoke test — Dellwood triplex + Springfield SFH with ADU.
+Runs two hardcoded properties through the entire pipeline and prints
+full deal cards to the terminal.
 
 Demonstrates comp sourcing priority:
   1. Live comps (passed as RentalComp-like objects) → LIVE_COMPS
@@ -19,6 +19,13 @@ from __future__ import annotations
 
 import sys
 import os
+
+# Load .env if present
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+except ImportError:
+    pass
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -328,6 +335,216 @@ print(f"  Street View: {sv_urls['street_view_image_url'][:70]}...")
 print(f"  Google Maps: {sv_urls['google_maps_link']}")
 print()
 print("=" * 72)
-print(c("  Smoke test complete — all pipeline stages ran successfully.", GREEN))
+print(c("  TEST CASE 1 COMPLETE — Dellwood Triplex", GREEN))
+print("=" * 72)
+print()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TEST CASE 2 — Springfield SFH with ADU
+# ══════════════════════════════════════════════════════════════════════════════
+
+SPRINGFIELD_ADU = PropertyRecord(
+    canonical_id   = make_canonical_id("884 Walnut St", "32206"),
+    source         = DataSource.ZILLOW_SALE,
+    source_id      = "smoke_test_002",
+    scraped_at     = DELLWOOD_TRIPLEX.scraped_at,
+    address        = "884 Walnut St",
+    city           = "Jacksonville",
+    state          = "FL",
+    zip_code       = "32206",
+    lat            = 30.3378,
+    lon            = -81.6502,
+    price          = 355_000.0,
+    beds           = 4,
+    baths          = 2.0,
+    sqft           = 1_800.0,
+    year_built     = 1942,
+    property_type  = PropertyType.SFR,
+    num_units      = 2,          # main house + ADU
+    days_on_market = 9,
+)
+
+# Neighborhood — Springfield near UF Health Shands JAX
+flood2   = FloodZoneResult(flood_zone="X", is_high_risk=False, sfha=False, panel_number="12031C0306H")
+crime2   = CrimeGradeResult(grade="B", passes_gate=True, low_confidence=False)
+hospital2 = get_hospital_proximity(SPRINGFIELD_ADU.lat, SPRINGFIELD_ADU.lon)
+liveability2 = compute_liveability(
+    walk_score   = 68,
+    hospital     = hospital2,
+    crime_grade  = crime2["grade"],
+    flood        = flood2,
+    visual_score = 6,
+)
+gate_result2 = evaluate_gates(SPRINGFIELD_ADU, crime2, flood2)
+sv_urls2 = get_street_view_urls(SPRINGFIELD_ADU.lat, SPRINGFIELD_ADU.lon, SPRINGFIELD_ADU.address)
+
+# Comps — 2BR LTR and MTR comps in 32206
+ltr_comps2 = [
+    _make_comp(RentalStrategy.LTR, 1_000.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_050.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_075.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_100.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_125.0, 2),
+]
+mtr_comps2 = [
+    _make_comp(RentalStrategy.MTR, 1_600.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_700.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_750.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_800.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_850.0, 2),
+]
+all_comps2  = ltr_comps2 + mtr_comps2
+comps_count2 = len(all_comps2)
+
+prop_dict2 = {
+    "purchase_price":        SPRINGFIELD_ADU.price,
+    "num_units":             SPRINGFIELD_ADU.num_units,
+    "zip_code":              SPRINGFIELD_ADU.zip_code,
+    "beds":                  SPRINGFIELD_ADU.beds,
+    "interest_rate":         va_rate.rate,
+    "insurance_annual":      SPRINGFIELD_ADU.price * 0.005,
+    "ltr_vacancy_rate":      0.08,
+    "mtr_vacancy_rate":      0.10,
+    "str_vacancy_rate":      0.25,
+    "ltr_mgmt_rate":         0.08,
+    "ltr_maintenance_rate":  0.01,
+    "ltr_capex_rate":        0.005,
+    "va_funding_fee_pct":    0.0215,
+    "str_adr":               160.0,
+}
+
+uw2 = underwrite(prop_dict2, comps=all_comps2)
+
+worst_ltr2 = uw2.ltr.worst_case_cash_flow
+worst_mtr2 = uw2.mtr.worst_case_cash_flow
+worst_str2 = uw2.str_.worst_case_cash_flow
+best_cf2   = max(worst_ltr2, worst_mtr2, worst_str2)
+best_base2 = uw2.best_strategy(Scenario.BASE)
+
+ds2 = score_deal(
+    conservative_monthly_cash_flow = best_cf2,
+    dscr            = best_base2.dscr,
+    cash_on_cash    = best_base2.cash_on_cash,
+    year_built      = SPRINGFIELD_ADU.year_built,
+    flood_high_risk = flood2["is_high_risk"],
+    purchase_price  = SPRINGFIELD_ADU.price,
+    raw_confidence  = 0.88,
+    scraped_at      = SPRINGFIELD_ADU.scraped_at,
+    comps_count     = comps_count2,
+    address         = SPRINGFIELD_ADU.address,
+    num_units       = SPRINGFIELD_ADU.num_units,
+    strategy_validated = True,
+    confidence_penalty = uw2.confidence_penalty,
+)
+
+refi_pmt2 = _monthly_payment(uw2.loan_amount, 0.055, 30)
+
+# ── Print deal card 2 ──────────────────────────────────────────────────────────
+
+print()
+print("=" * 72)
+print(c("  JAX ANALYZER — DEAL CARD 2 (SMOKE TEST)", BOLD))
+print("=" * 72)
+print()
+
+print(c(f"  {SPRINGFIELD_ADU.address}, Jacksonville FL {SPRINGFIELD_ADU.zip_code}", BOLD))
+print(f"  SFR + ADU · {SPRINGFIELD_ADU.num_units} units · "
+      f"Built {SPRINGFIELD_ADU.year_built} · {SPRINGFIELD_ADU.sqft:,.0f} sqft")
+print(f"  List price: {c(f'${SPRINGFIELD_ADU.price:,.0f}', BOLD)} · {SPRINGFIELD_ADU.days_on_market}d on market")
+print()
+
+print(c("  VA RATE", BOLD))
+print(f"  {c(f'{va_rate.rate:.3%}', rate_color)}  [{rate_label}]", end="")
+if va_rate.is_stale:
+    print(f"  {c('⚠ Stale (>48h old)', YEL)}", end="")
+print()
+print()
+
+comp_col2 = comp_colors.get(uw2.rent_source, RESET)
+print(c("  COMP SOURCE", BOLD))
+print(f"  {c(comp_labels.get(uw2.rent_source, str(uw2.rent_source)), comp_col2)}")
+if uw2.rent_source == RentSource.LIVE_COMPS:
+    ltr_total2 = uw2.ltr.base.revenue.gross_annual_revenue / 12
+    mtr_total2 = uw2.mtr.base.revenue.gross_annual_revenue / 12
+    print(f"  {comps_count2} comps used  ·  "
+          f"LTR ${ltr_total2:,.0f}/mo total  ·  MTR ${mtr_total2:,.0f}/mo total")
+if uw2.confidence_penalty:
+    print(f"  {c('⚠ confidence_penalty=True — Confidence Score capped at 19, no HP alert possible', RED)}")
+print()
+
+score_color2 = GREEN if ds2.deal_score >= 60 else (YEL if ds2.deal_score >= 40 else RED)
+alert_tag2   = c("  🔥 HIGH PRIORITY ALERT", RED) if ds2.is_high_priority else ""
+print(c(f"  DEAL SCORE: {ds2.deal_score}/100", score_color2) + alert_tag2)
+print(f"  Return: {ds2.return_score.score}/40  |  Risk: {ds2.risk_score.score}/30  |  Confidence: {ds2.confidence_score.score}/30")
+if ds2.confidence_score.data_penalty:
+    print(f"  {c('  (Confidence capped at 19 — no comp data)', YEL)}")
+print()
+print(f"  {ds2.why_scored_high}")
+print()
+
+print(c("  STRATEGIES (Conservative / Worst Stress Case)", BOLD))
+rows2 = sorted([
+    ("LTR", worst_ltr2, uw2.ltr.base.dscr, uw2.ltr.base.cash_on_cash),
+    ("MTR", worst_mtr2, uw2.mtr.base.dscr, uw2.mtr.base.cash_on_cash),
+    ("STR", worst_str2, uw2.str_.base.dscr, uw2.str_.base.cash_on_cash),
+], key=lambda r: r[1], reverse=True)
+for i, (name, cf, dscr, coc) in enumerate(rows2, 1):
+    cf_c = GREEN if cf >= 500 else RED
+    print(f"  #{i} {name}: {c(f'${cf:,.0f}/mo', cf_c)} · DSCR {dscr:.2f} · CoC {coc:.1%}")
+print()
+
+print(c("  VA LOAN SNAPSHOT", BOLD))
+print(f"  Purchase price:    ${SPRINGFIELD_ADU.price:,.0f}")
+print(f"  Funding fee (2.15%): ${uw2.loan_amount - SPRINGFIELD_ADU.price:,.0f}")
+print(f"  Loan amount:       ${uw2.loan_amount:,.0f}")
+print(f"  Rate used:         {va_rate.rate:.3%}  [{rate_label}]")
+print(f"  Monthly P&I:       ${uw2.monthly_payment:,.0f}")
+tax_mo2 = SPRINGFIELD_ADU.price * 0.0077 / 12
+ins_mo2 = SPRINGFIELD_ADU.price * 0.005 / 12
+total_piti2 = uw2.monthly_payment + tax_mo2 + ins_mo2
+print(f"  Total PITI:        ${total_piti2:,.0f}/mo (P&I + tax + insurance)")
+print(f"  Cash to close:     ${uw2.total_cash_invested:,.0f} (closing costs; 0% down)")
+print(f"  Refi at 5.5%:      ${refi_pmt2:,.0f}/mo P&I")
+print()
+
+print(c("  STRESS TESTS (LTR base strategy)", BOLD))
+for sc in list(Scenario):
+    if sc.value == "base":
+        continue
+    res2 = uw2.ltr.scenarios[sc]
+    cf_c = GREEN if res2.monthly_cash_flow >= 0 else RED
+    print(f"  {res2.scenario_label:<30} {c(f'${res2.monthly_cash_flow:,.0f}/mo', cf_c)} · DSCR {res2.dscr:.2f}")
+print()
+
+print(c("  NEIGHBORHOOD SCORES", BOLD))
+grade_c2 = GREEN if crime2["grade"] in ["A+","A","A-","B+","B","B-"] else RED
+print(f"  Crime Grade:       {c(crime2['grade'], grade_c2)}")
+print(f"  Walk Score:        68/100")
+flood_c2 = RED if flood2["is_high_risk"] else GREEN
+print(f"  Flood Zone:        {c(flood2['flood_zone'], flood_c2)}")
+print(f"  Hospital dist:     {hospital2['distance_miles']:.2f} mi to {hospital2['closest_hospital']}")
+print(f"  Liveability Index: {liveability2['total']}/100")
+print()
+
+gate_c2 = GREEN if gate_result2.passed else RED
+print(c(f"  HARD GATES: {'ALL PASSED ✓' if gate_result2.passed else 'FAILED ✗'}", gate_c2))
+if gate_result2.failed_gates:
+    for reason in gate_result2.failed_gates:
+        print(f"    ✗ {reason}")
+print()
+
+if ds2.risk_score.risk_flags:
+    print(c("  RISK FLAGS", RED))
+    for flag in ds2.risk_score.risk_flags:
+        print(f"  ⚠  {flag}")
+    print()
+
+print(c("  LINKS", BOLD))
+print(f"  Street View: {sv_urls2['street_view_image_url'][:70]}...")
+print(f"  Google Maps: {sv_urls2['google_maps_link']}")
+print()
+print("=" * 72)
+print(c("  Smoke test complete — both pipeline stages ran successfully.", GREEN))
 print("=" * 72)
 print()
