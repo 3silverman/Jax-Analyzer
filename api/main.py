@@ -11,6 +11,7 @@ Lifespan:
 from __future__ import annotations
 
 import json
+import traceback
 from contextlib import asynccontextmanager
 
 import structlog
@@ -68,10 +69,25 @@ async def _run_daily_scan() -> None:
     from ingestion.pipeline import run_pipeline
     from api.state import get_store
 
-    logger.info("scheduled_scan_start")
+    logger.info("scan_start")
     try:
         scan_result = await asyncio.to_thread(run_scan)
+        logger.info(
+            "scan_ingestion_done",
+            total_listings=scan_result.total_listings,
+            scanned_at=scan_result.scanned_at.isoformat(),
+        )
+
         pipeline_out = await asyncio.to_thread(run_pipeline, scan_result)
+        summary = pipeline_out.get("scan_summary", {})
+        logger.info(
+            "scan_pipeline_done",
+            inbox=len(pipeline_out.get("inbox", [])),
+            alerts=len(pipeline_out.get("alerts", [])),
+            rejected=len(pipeline_out.get("rejected", [])),
+            passed_gates=summary.get("passed_gates", 0),
+            total_scanned=summary.get("total_scanned", 0),
+        )
 
         # Update in-memory store (always)
         store = get_store()
@@ -79,7 +95,7 @@ async def _run_daily_scan() -> None:
         store["alerts"]  = pipeline_out.get("alerts", [])
         store["rejected"] = pipeline_out.get("rejected", [])
         store.setdefault("scan_logs", []).append({
-            **pipeline_out.get("scan_summary", {}),
+            **summary,
             "started_at": scan_result.scanned_at.isoformat(),
         })
 
@@ -87,12 +103,16 @@ async def _run_daily_scan() -> None:
         await _persist_pipeline_results(pipeline_out, scan_result)
 
         logger.info(
-            "scheduled_scan_done",
+            "scan_done",
             listings=scan_result.total_listings,
             alerts=len(pipeline_out.get("alerts", [])),
         )
     except Exception as exc:
-        logger.error("scheduled_scan_failed", error=str(exc))
+        logger.error(
+            "scan_failed",
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
 
 
 async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
