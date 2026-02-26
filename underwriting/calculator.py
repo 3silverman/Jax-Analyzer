@@ -1,51 +1,55 @@
 """
 underwriting/calculator.py
 
-Pure math underwriting engine — zero API calls, zero DB access.
+Pure math underwriting engine for VA loan multifamily investing in Jacksonville (Duval County), FL.
+Zero API calls. Zero DB access.
 
 Entry point:
     result = underwrite(property_dict)
 
-Returns an UnderwritingResult containing cash-flow analysis for LTR, MTR, and
-STR strategies, each evaluated across five stress-test scenarios.
+Returns an UnderwritingResult with LTR, MTR, and STR StrategyResults, each containing a base
+case and five individual stress-test scenarios.
 
-Property dict keys (all optional with sensible defaults):
-    # Acquisition
+Property dict keys (snake_case; all optional except purchase_price):
+
+    # Acquisition — VA Loan
     purchase_price          float   required
-    down_payment_pct        float   default 0.20
+    va_funding_fee_pct      float   default 0.0215  (first use; pass 0.033 for subsequent)
     interest_rate           float   default 0.075
     loan_term_years         int     default 30
     closing_costs_pct       float   default 0.03
     rehab_cost              float   default 0.0
+    num_units               int     default 1       (for per-unit MTR/STR expense scaling)
 
     # LTR — Long-Term Rental
-    monthly_rent            float   required for LTR
-    vacancy_rate            float   default 0.08
-    property_mgmt_rate      float   default 0.10
+    monthly_rent            float   total gross rent (all units combined)
+    ltr_vacancy_rate        float   default 0.08
+    ltr_mgmt_rate           float   default 0.08
+    ltr_maintenance_rate    float   default 0.01    (% of purchase_price)
+    ltr_capex_rate          float   default 0.005   (% of purchase_price)
 
-    # MTR — Medium-Term Rental (furnished, 1-6 month stays)
-    mtr_monthly_rate        float   required for MTR (furnished monthly rent)
-    mtr_vacancy_rate        float   default 0.15
-    mtr_mgmt_rate           float   default 0.15
-    mtr_utilities_monthly   float   default 200.0
-    mtr_furnishing_monthly  float   default 125.0
+    # MTR — Medium-Term Rental (furnished, corporate/travel-nurse, 1–6 month stays)
+    mtr_monthly_rate        float   total furnished rent (all units combined)
+    mtr_vacancy_rate        float   default 0.10
+    mtr_mgmt_rate           float   default 0.10
+    mtr_utilities_per_unit  float   default 150.0   ($/mo/unit — utilities + internet)
+    mtr_furnishing_per_unit float   default 50.0    ($/mo/unit — furnishing amortization)
+    mtr_avg_stay_months     float   default 3.0     (average stay length for turnover calc)
+    mtr_turnover_cost       float   default 200.0   ($/stay — cleaning + restock)
 
     # STR — Short-Term Rental (Airbnb / VRBO)
-    str_adr                 float   required for STR (average daily rate)
-    str_occupancy           float   default 0.65
-    str_platform_fee_pct    float   default 0.03
-    str_cleaning_per_stay   float   default 150.0
+    str_adr                 float   average daily rate
+    str_vacancy_rate        float   default 0.25    (occupancy = 1 − vacancy_rate = 0.75)
+    str_platform_fee_pct    float   default 0.15    (includes all management)
+    str_cleaning_per_turn   float   default 125.0
     str_avg_stay_nights     float   default 3.5
-    str_mgmt_rate           float   default 0.25
-    str_utilities_monthly   float   default 275.0
-    str_furnishing_monthly  float   default 200.0
+    str_maintenance_rate    float   default 0.015   (% of purchase_price — higher wear)
+    str_capex_rate          float   default 0.005   (% of purchase_price)
 
-    # Operating expenses (shared)
-    property_tax_annual     float   default 1.1% of purchase_price
-    insurance_annual        float   default 0.5% of purchase_price
+    # Shared operating expenses
+    property_tax_annual     float   default 0.77% of purchase_price (Duval County)
+    insurance_annual        float   default 0.50% of purchase_price
     hoa_monthly             float   default 0.0
-    maintenance_rate        float   default 0.01  (% of purchase_price)
-    capex_rate              float   default 0.01  (% of purchase_price)
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ from typing import Any
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Enums & constants
+# Enums & labels
 # ──────────────────────────────────────────────────────────────────────────────
 
 class Strategy(str, Enum):
@@ -67,42 +71,70 @@ class Strategy(str, Enum):
 
 
 class Scenario(str, Enum):
-    BASE = "base"
-    RATE_SHOCK = "rate_shock"           # +200 bps on interest rate
-    RENT_DECLINE = "rent_decline"       # gross revenue −15 %
-    VACANCY_SURGE = "vacancy_surge"     # vacancy / occupancy stressed +50 %
-    FULL_STRESS = "full_stress"         # rate +100 bps + revenue −10 % + vacancy +5 pts
+    BASE             = "base"
+    STRESS_RATE      = "stress_rate"       # interest rate +1%
+    STRESS_INSURANCE = "stress_insurance"  # insurance cost +50%
+    STRESS_VACANCY   = "stress_vacancy"    # vacancy +20 percentage points
+    STRESS_TAX       = "stress_tax"        # property tax +25%
+    STRESS_REPAIR    = "stress_repair"     # $8,000 year-1 one-time repair
 
 
-SCENARIO_LABELS = {
-    Scenario.BASE: "Base Case",
-    Scenario.RATE_SHOCK: "Rate Shock (+200 bps)",
-    Scenario.RENT_DECLINE: "Rent Decline (−15%)",
-    Scenario.VACANCY_SURGE: "Vacancy Surge (+50% of vacancy rate)",
-    Scenario.FULL_STRESS: "Full Stress (rate +100 bps, revenue −10%, vacancy +5 pts)",
+SCENARIO_LABELS: dict[Scenario, str] = {
+    Scenario.BASE:             "Base Case",
+    Scenario.STRESS_RATE:      "Rate Shock (+1%)",
+    Scenario.STRESS_INSURANCE: "Insurance Spike (+50%)",
+    Scenario.STRESS_VACANCY:   "Vacancy Shock (+20 pts)",
+    Scenario.STRESS_TAX:       "Tax Reassessment (+25%)",
+    Scenario.STRESS_REPAIR:    "Year-1 Major Repair ($8,000)",
 }
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Data classes
+# Stress-test modifiers (one axis each)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class _StressMod:
+    rate_delta:      float = 0.0    # additive to interest_rate
+    insurance_mult:  float = 1.0    # multiplier on insurance_annual
+    vacancy_delta:   float = 0.0    # additive to vacancy rate (absolute pp)
+    tax_mult:        float = 1.0    # multiplier on property_tax_annual
+    one_time_repair: float = 0.0    # subtracted from annual_cash_flow (year-1 cost)
+
+
+_MODS: dict[Scenario, _StressMod] = {
+    Scenario.BASE:             _StressMod(),
+    Scenario.STRESS_RATE:      _StressMod(rate_delta=0.01),
+    Scenario.STRESS_INSURANCE: _StressMod(insurance_mult=1.50),
+    Scenario.STRESS_VACANCY:   _StressMod(vacancy_delta=0.20),
+    Scenario.STRESS_TAX:       _StressMod(tax_mult=1.25),
+    Scenario.STRESS_REPAIR:    _StressMod(one_time_repair=8_000.0),
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Result data classes
 # ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class ExpenseDetail:
-    property_tax: float
-    insurance: float
-    hoa: float
-    maintenance: float
-    capex: float
-    property_mgmt: float
-    vacancy_loss: float
-    utilities: float = 0.0
+    property_tax:    float
+    insurance:       float
+    hoa:             float
+    maintenance:     float
+    capex:           float
+    property_mgmt:   float
+    vacancy_loss:    float
+    utilities:       float = 0.0
     furnishing_amort: float = 0.0
-    platform_fee: float = 0.0
-    cleaning: float = 0.0
+    turnover:        float = 0.0
+    platform_fee:    float = 0.0
+    cleaning:        float = 0.0
+    one_time_repair: float = 0.0   # STRESS_REPAIR only; excluded from NOI calc
 
     @property
-    def total(self) -> float:
+    def operating_total(self) -> float:
+        """All recurring cash opex (excludes one_time_repair; used for NOI)."""
         return (
             self.property_tax
             + self.insurance
@@ -113,6 +145,7 @@ class ExpenseDetail:
             + self.vacancy_loss
             + self.utilities
             + self.furnishing_amort
+            + self.turnover
             + self.platform_fee
             + self.cleaning
         )
@@ -121,20 +154,20 @@ class ExpenseDetail:
 @dataclass
 class RevenueDetail:
     gross_annual_revenue: float
-    vacancy_loss: float
+    vacancy_loss:         float
     effective_gross_income: float
 
 
 @dataclass
 class CashFlowResult:
-    strategy: Strategy
-    scenario: Scenario
+    strategy:       Strategy
+    scenario:       Scenario
     scenario_label: str
 
     # Capital stack
-    purchase_price: float
-    loan_amount: float
-    total_cash_invested: float   # down payment + closing costs + rehab
+    purchase_price:      float
+    loan_amount:         float        # includes VA funding fee
+    total_cash_invested: float        # closing costs + rehab (0% down VA loan)
 
     # Revenue
     revenue: RevenueDetail
@@ -143,57 +176,64 @@ class CashFlowResult:
     expenses: ExpenseDetail
 
     # P&L
-    noi: float                   # NOI = EGI − operating expenses (excl. debt service)
+    noi:                 float   # EGI − operating_total (excl. one_time_repair)
     annual_debt_service: float
-    annual_cash_flow: float
-    monthly_cash_flow: float
+    annual_cash_flow:    float   # NOI − debt service − one_time_repair
+    monthly_cash_flow:   float
 
     # Return metrics
-    cap_rate: float              # NOI / purchase_price
-    cash_on_cash: float          # annual_cash_flow / total_cash_invested
-    grm: float                   # purchase_price / gross_annual_revenue
-    dscr: float                  # NOI / annual_debt_service (0 if no debt)
+    cap_rate:    float   # NOI / purchase_price
+    cash_on_cash: float  # annual_cash_flow / total_cash_invested
+    grm:         float   # purchase_price / gross_annual_revenue
+    dscr:        float   # NOI / annual_debt_service
 
-    # STR-specific (None for LTR/MTR)
-    break_even_occupancy: float | None = None
+    # STR-specific
+    break_even_occupancy: float | None = None  # occupancy needed to cover all costs
+    seasonality_flag:     bool = False
 
 
 @dataclass
 class StrategyResult:
-    strategy: Strategy
+    strategy:  Strategy
     scenarios: dict[Scenario, CashFlowResult] = field(default_factory=dict)
 
     @property
     def base(self) -> CashFlowResult:
         return self.scenarios[Scenario.BASE]
 
+    @property
+    def worst_case_cash_flow(self) -> float:
+        """Minimum monthly cash flow across all stress scenarios (used for scoring)."""
+        return min(r.monthly_cash_flow for r in self.scenarios.values())
+
 
 @dataclass
 class UnderwritingResult:
-    purchase_price: float
+    purchase_price:      float
+    loan_amount:         float
     total_cash_invested: float
-    loan_amount: float
-    monthly_payment: float
-    annual_debt_service: float
+    monthly_payment:     float   # base-case P&I
+    annual_debt_service: float   # base-case
 
-    ltr: StrategyResult
-    mtr: StrategyResult
-    str_: StrategyResult    # str is a built-in; use str_
+    ltr:  StrategyResult
+    mtr:  StrategyResult
+    str_: StrategyResult   # str is a built-in; attribute named str_
 
     @property
     def all_results(self) -> list[CashFlowResult]:
-        results = []
+        results: list[CashFlowResult] = []
         for strat in (self.ltr, self.mtr, self.str_):
             results.extend(strat.scenarios.values())
         return results
 
     def best_strategy(self, scenario: Scenario = Scenario.BASE) -> CashFlowResult:
-        candidates = [
-            self.ltr.scenarios[scenario],
-            self.mtr.scenarios[scenario],
-            self.str_.scenarios[scenario],
-        ]
-        return max(candidates, key=lambda r: r.cash_on_cash)
+        """Return the highest CoC strategy for a given scenario."""
+        return max(
+            [self.ltr.scenarios[scenario],
+             self.mtr.scenarios[scenario],
+             self.str_.scenarios[scenario]],
+            key=lambda r: r.cash_on_cash,
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -201,7 +241,7 @@ class UnderwritingResult:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _monthly_payment(principal: float, annual_rate: float, years: int) -> float:
-    """Standard amortising mortgage payment (P&I)."""
+    """Standard amortising mortgage payment (P&I only)."""
     if annual_rate == 0:
         return principal / (years * 12)
     r = annual_rate / 12
@@ -209,328 +249,273 @@ def _monthly_payment(principal: float, annual_rate: float, years: int) -> float:
     return principal * (r * (1 + r) ** n) / ((1 + r) ** n - 1)
 
 
-def _safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    if denominator == 0:
-        return default
-    return numerator / denominator
+def _safe_div(n: float, d: float, default: float = 0.0) -> float:
+    return default if d == 0 else n / d
 
 
 def _get(prop: dict[str, Any], key: str, default: Any) -> Any:
-    val = prop.get(key)
-    return default if (val is None or (isinstance(val, float) and math.isnan(val))) else val
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Scenario modifiers
-# ──────────────────────────────────────────────────────────────────────────────
-
-@dataclass
-class _ScenarioMod:
-    rate_delta: float = 0.0        # additive bps expressed as decimal (0.02 = +200 bps)
-    revenue_mult: float = 1.0      # multiplier applied to gross revenue
-    vacancy_delta: float = 0.0     # additive delta to vacancy rate / occupancy haircut
-
-
-_SCENARIO_MODS: dict[Scenario, _ScenarioMod] = {
-    Scenario.BASE:          _ScenarioMod(),
-    Scenario.RATE_SHOCK:    _ScenarioMod(rate_delta=0.02),
-    Scenario.RENT_DECLINE:  _ScenarioMod(revenue_mult=0.85),
-    Scenario.VACANCY_SURGE: _ScenarioMod(vacancy_delta=0.50),   # vacancy rate × 1.5
-    Scenario.FULL_STRESS:   _ScenarioMod(rate_delta=0.01, revenue_mult=0.90, vacancy_delta=0.05),
-}
+    v = prop.get(key)
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return default
+    return v
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-strategy calculators
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _calc_ltr(
+def _ltr(
     prop: dict[str, Any],
     purchase_price: float,
     loan_amount: float,
     total_cash_invested: float,
     base_rate: float,
     loan_term: int,
-    shared_opex: dict[str, float],
+    base_tax: float,
+    base_insurance: float,
+    hoa_annual: float,
     scenario: Scenario,
 ) -> CashFlowResult:
-    mod = _SCENARIO_MODS[scenario]
-    rate = base_rate + mod.rate_delta
+    mod = _MODS[scenario]
 
-    monthly_rent = _get(prop, "monthly_rent", 0.0) * mod.revenue_mult
-    base_vacancy = _get(prop, "vacancy_rate", 0.08)
-    # Vacancy surge: multiply vacancy rate by 1.5, then add fixed delta
-    vacancy_rate = min(base_vacancy * (1 + mod.vacancy_delta) + mod.vacancy_delta * 0.0, 0.50)
-    # Simpler: for VACANCY_SURGE delta=0.50 means vacancy rate × 1.5 (50 % increase)
-    if scenario == Scenario.VACANCY_SURGE:
-        vacancy_rate = min(base_vacancy * 1.50, 0.50)
-    elif scenario == Scenario.FULL_STRESS:
-        vacancy_rate = min(base_vacancy + 0.05, 0.50)
+    rate      = base_rate + mod.rate_delta
+    tax       = base_tax      * mod.tax_mult
+    insurance = base_insurance * mod.insurance_mult
 
-    mgmt_rate = _get(prop, "property_mgmt_rate", 0.10)
+    monthly_rent   = _get(prop, "monthly_rent", 0.0)
+    vacancy_rate   = min(_get(prop, "ltr_vacancy_rate",   0.08) + mod.vacancy_delta, 0.95)
+    mgmt_rate      = _get(prop, "ltr_mgmt_rate",          0.08)
+    maintenance    = purchase_price * _get(prop, "ltr_maintenance_rate", 0.01)
+    capex          = purchase_price * _get(prop, "ltr_capex_rate",       0.005)
 
-    gross_annual = monthly_rent * 12
-    vacancy_loss = gross_annual * vacancy_rate
-    egi = gross_annual - vacancy_loss
-
-    mgmt_fee = egi * mgmt_rate
+    gross     = monthly_rent * 12
+    vac_loss  = gross * vacancy_rate
+    egi       = gross - vac_loss
+    mgmt_fee  = egi * mgmt_rate
 
     expenses = ExpenseDetail(
-        property_tax=shared_opex["property_tax"],
-        insurance=shared_opex["insurance"],
-        hoa=shared_opex["hoa"],
-        maintenance=shared_opex["maintenance"],
-        capex=shared_opex["capex"],
-        property_mgmt=mgmt_fee,
-        vacancy_loss=vacancy_loss,
+        property_tax  = tax,
+        insurance     = insurance,
+        hoa           = hoa_annual,
+        maintenance   = maintenance,
+        capex         = capex,
+        property_mgmt = mgmt_fee,
+        vacancy_loss  = vac_loss,
+        one_time_repair = mod.one_time_repair,
     )
 
-    noi = egi - (expenses.total - vacancy_loss)  # vacancy already out of EGI
-    # Re-derive correctly: NOI = EGI − cash operating expenses (excl. vacancy since EGI is net of vacancy)
+    noi     = egi - expenses.operating_total + vac_loss  # vacancy already removed from EGI
+    # Correct: NOI = EGI − all cash opex *except* vacancy (which is embedded in EGI)
     cash_opex = (
-        expenses.property_tax
-        + expenses.insurance
-        + expenses.hoa
-        + expenses.maintenance
-        + expenses.capex
-        + expenses.property_mgmt
+        expenses.property_tax + expenses.insurance + expenses.hoa
+        + expenses.maintenance + expenses.capex + expenses.property_mgmt
     )
     noi = egi - cash_opex
 
-    pmt = _monthly_payment(loan_amount, rate, loan_term)
-    annual_ds = pmt * 12
-    annual_cf = noi - annual_ds
-    monthly_cf = annual_cf / 12
+    pmt      = _monthly_payment(loan_amount, rate, loan_term)
+    ann_ds   = pmt * 12
+    ann_cf   = noi - ann_ds - mod.one_time_repair
+    mo_cf    = ann_cf / 12
 
     return CashFlowResult(
-        strategy=Strategy.LTR,
-        scenario=scenario,
-        scenario_label=SCENARIO_LABELS[scenario],
-        purchase_price=purchase_price,
-        loan_amount=loan_amount,
-        total_cash_invested=total_cash_invested,
-        revenue=RevenueDetail(
-            gross_annual_revenue=gross_annual,
-            vacancy_loss=vacancy_loss,
-            effective_gross_income=egi,
-        ),
-        expenses=expenses,
-        noi=noi,
-        annual_debt_service=annual_ds,
-        annual_cash_flow=annual_cf,
-        monthly_cash_flow=monthly_cf,
-        cap_rate=_safe_divide(noi, purchase_price),
-        cash_on_cash=_safe_divide(annual_cf, total_cash_invested),
-        grm=_safe_divide(purchase_price, gross_annual),
-        dscr=_safe_divide(noi, annual_ds),
-        break_even_occupancy=None,
+        strategy       = Strategy.LTR,
+        scenario       = scenario,
+        scenario_label = SCENARIO_LABELS[scenario],
+        purchase_price      = purchase_price,
+        loan_amount         = loan_amount,
+        total_cash_invested = total_cash_invested,
+        revenue  = RevenueDetail(gross, vac_loss, egi),
+        expenses = expenses,
+        noi                 = noi,
+        annual_debt_service = ann_ds,
+        annual_cash_flow    = ann_cf,
+        monthly_cash_flow   = mo_cf,
+        cap_rate    = _safe_div(noi, purchase_price),
+        cash_on_cash= _safe_div(ann_cf, total_cash_invested),
+        grm         = _safe_div(purchase_price, gross),
+        dscr        = _safe_div(noi, ann_ds),
     )
 
 
-def _calc_mtr(
+def _mtr(
     prop: dict[str, Any],
     purchase_price: float,
     loan_amount: float,
     total_cash_invested: float,
     base_rate: float,
     loan_term: int,
-    shared_opex: dict[str, float],
+    base_tax: float,
+    base_insurance: float,
+    hoa_annual: float,
     scenario: Scenario,
 ) -> CashFlowResult:
-    mod = _SCENARIO_MODS[scenario]
-    rate = base_rate + mod.rate_delta
+    mod = _MODS[scenario]
 
-    mtr_monthly = _get(prop, "mtr_monthly_rate", 0.0) * mod.revenue_mult
-    base_vacancy = _get(prop, "mtr_vacancy_rate", 0.15)
-    if scenario == Scenario.VACANCY_SURGE:
-        vacancy_rate = min(base_vacancy * 1.50, 0.60)
-    elif scenario == Scenario.FULL_STRESS:
-        vacancy_rate = min(base_vacancy + 0.05, 0.60)
-    else:
-        vacancy_rate = base_vacancy
+    rate      = base_rate + mod.rate_delta
+    tax       = base_tax      * mod.tax_mult
+    insurance = base_insurance * mod.insurance_mult
 
-    mgmt_rate = _get(prop, "mtr_mgmt_rate", 0.15)
-    utilities_monthly = _get(prop, "mtr_utilities_monthly", 200.0)
-    furnishing_monthly = _get(prop, "mtr_furnishing_monthly", 125.0)
+    num_units     = int(_get(prop, "num_units", 1))
+    mtr_monthly   = _get(prop, "mtr_monthly_rate", 0.0)
+    vacancy_rate  = min(_get(prop, "mtr_vacancy_rate",        0.10) + mod.vacancy_delta, 0.95)
+    mgmt_rate     = _get(prop, "mtr_mgmt_rate",               0.10)
+    maintenance   = purchase_price * _get(prop, "ltr_maintenance_rate", 0.01)
+    capex         = purchase_price * _get(prop, "ltr_capex_rate",       0.005)
+    util_pu       = _get(prop, "mtr_utilities_per_unit",  150.0)
+    furn_pu       = _get(prop, "mtr_furnishing_per_unit",  50.0)
+    avg_stay_mo   = max(_get(prop, "mtr_avg_stay_months",    3.0), 0.5)
+    turnover_cost = _get(prop, "mtr_turnover_cost",         200.0)
 
-    gross_annual = mtr_monthly * 12
-    vacancy_loss = gross_annual * vacancy_rate
-    egi = gross_annual - vacancy_loss
-
+    gross    = mtr_monthly * 12
+    vac_loss = gross * vacancy_rate
+    egi      = gross - vac_loss
     mgmt_fee = egi * mgmt_rate
 
+    stays_per_year  = (12 / avg_stay_mo) * num_units
+    turnover_annual = stays_per_year * turnover_cost
+    util_annual     = util_pu * num_units * 12
+    furn_annual     = furn_pu * num_units * 12
+
     expenses = ExpenseDetail(
-        property_tax=shared_opex["property_tax"],
-        insurance=shared_opex["insurance"] * 1.25,  # landlord rider
-        hoa=shared_opex["hoa"],
-        maintenance=shared_opex["maintenance"],
-        capex=shared_opex["capex"],
-        property_mgmt=mgmt_fee,
-        vacancy_loss=vacancy_loss,
-        utilities=utilities_monthly * 12,
-        furnishing_amort=furnishing_monthly * 12,
+        property_tax    = tax,
+        insurance       = insurance,
+        hoa             = hoa_annual,
+        maintenance     = maintenance,
+        capex           = capex,
+        property_mgmt   = mgmt_fee,
+        vacancy_loss    = vac_loss,
+        utilities       = util_annual,
+        furnishing_amort= furn_annual,
+        turnover        = turnover_annual,
+        one_time_repair = mod.one_time_repair,
     )
 
     cash_opex = (
-        expenses.property_tax
-        + expenses.insurance
-        + expenses.hoa
-        + expenses.maintenance
-        + expenses.capex
-        + expenses.property_mgmt
-        + expenses.utilities
-        + expenses.furnishing_amort
+        expenses.property_tax + expenses.insurance + expenses.hoa
+        + expenses.maintenance + expenses.capex + expenses.property_mgmt
+        + expenses.utilities + expenses.furnishing_amort + expenses.turnover
     )
-    noi = egi - cash_opex
-
-    pmt = _monthly_payment(loan_amount, rate, loan_term)
-    annual_ds = pmt * 12
-    annual_cf = noi - annual_ds
-    monthly_cf = annual_cf / 12
+    noi    = egi - cash_opex
+    pmt    = _monthly_payment(loan_amount, rate, loan_term)
+    ann_ds = pmt * 12
+    ann_cf = noi - ann_ds - mod.one_time_repair
+    mo_cf  = ann_cf / 12
 
     return CashFlowResult(
-        strategy=Strategy.MTR,
-        scenario=scenario,
-        scenario_label=SCENARIO_LABELS[scenario],
-        purchase_price=purchase_price,
-        loan_amount=loan_amount,
-        total_cash_invested=total_cash_invested,
-        revenue=RevenueDetail(
-            gross_annual_revenue=gross_annual,
-            vacancy_loss=vacancy_loss,
-            effective_gross_income=egi,
-        ),
-        expenses=expenses,
-        noi=noi,
-        annual_debt_service=annual_ds,
-        annual_cash_flow=annual_cf,
-        monthly_cash_flow=monthly_cf,
-        cap_rate=_safe_divide(noi, purchase_price),
-        cash_on_cash=_safe_divide(annual_cf, total_cash_invested),
-        grm=_safe_divide(purchase_price, gross_annual),
-        dscr=_safe_divide(noi, annual_ds),
-        break_even_occupancy=None,
+        strategy       = Strategy.MTR,
+        scenario       = scenario,
+        scenario_label = SCENARIO_LABELS[scenario],
+        purchase_price      = purchase_price,
+        loan_amount         = loan_amount,
+        total_cash_invested = total_cash_invested,
+        revenue  = RevenueDetail(gross, vac_loss, egi),
+        expenses = expenses,
+        noi                 = noi,
+        annual_debt_service = ann_ds,
+        annual_cash_flow    = ann_cf,
+        monthly_cash_flow   = mo_cf,
+        cap_rate    = _safe_div(noi, purchase_price),
+        cash_on_cash= _safe_div(ann_cf, total_cash_invested),
+        grm         = _safe_div(purchase_price, gross),
+        dscr        = _safe_div(noi, ann_ds),
     )
 
 
-def _calc_str(
+def _str(
     prop: dict[str, Any],
     purchase_price: float,
     loan_amount: float,
     total_cash_invested: float,
     base_rate: float,
     loan_term: int,
-    shared_opex: dict[str, float],
+    base_tax: float,
+    base_insurance: float,
+    hoa_annual: float,
     scenario: Scenario,
 ) -> CashFlowResult:
-    mod = _SCENARIO_MODS[scenario]
-    rate = base_rate + mod.rate_delta
+    mod = _MODS[scenario]
 
-    adr = _get(prop, "str_adr", 0.0) * mod.revenue_mult
-    base_occupancy = _get(prop, "str_occupancy", 0.65)
-    # Vacancy surge for STR: reduce occupancy
-    if scenario == Scenario.VACANCY_SURGE:
-        occupancy = max(base_occupancy * (1 - 0.33), 0.20)   # ≈ −33% of occupancy
-    elif scenario == Scenario.FULL_STRESS:
-        occupancy = max(base_occupancy - 0.05, 0.20)
-    else:
-        occupancy = base_occupancy
+    rate      = base_rate + mod.rate_delta
+    tax       = base_tax      * mod.tax_mult
+    insurance = base_insurance * mod.insurance_mult
 
-    platform_fee_pct = _get(prop, "str_platform_fee_pct", 0.03)
-    cleaning_per_stay = _get(prop, "str_cleaning_per_stay", 150.0)
-    avg_stay_nights = _get(prop, "str_avg_stay_nights", 3.5)
-    mgmt_rate = _get(prop, "str_mgmt_rate", 0.25)
-    utilities_monthly = _get(prop, "str_utilities_monthly", 275.0)
-    furnishing_monthly = _get(prop, "str_furnishing_monthly", 200.0)
+    adr              = _get(prop, "str_adr",             0.0)
+    base_vacancy     = _get(prop, "str_vacancy_rate",    0.25)
+    vacancy_rate     = min(base_vacancy + mod.vacancy_delta, 0.95)
+    occupancy        = 1.0 - vacancy_rate
+    platform_fee_pct = _get(prop, "str_platform_fee_pct", 0.15)
+    cleaning_pt      = _get(prop, "str_cleaning_per_turn", 125.0)
+    avg_stay_nights  = max(_get(prop, "str_avg_stay_nights", 3.5), 1.0)
+    maintenance      = purchase_price * _get(prop, "str_maintenance_rate", 0.015)
+    capex            = purchase_price * _get(prop, "str_capex_rate",       0.005)
 
-    occupied_nights = 365 * occupancy
-    gross_annual = adr * occupied_nights
-    # STR has no separate vacancy line; occupancy already bakes it in
-    egi = gross_annual
+    occupied_nights  = 365.0 * occupancy
+    gross            = adr * occupied_nights
+    # STR models vacancy via occupancy; no separate vacancy_loss line
+    egi              = gross
 
-    stays_per_year = occupied_nights / avg_stay_nights if avg_stay_nights > 0 else 0
-    cleaning_annual = stays_per_year * cleaning_per_stay
-    platform_fee_annual = gross_annual * platform_fee_pct
-    mgmt_fee = gross_annual * mgmt_rate  # STR mgmt is % of gross (not EGI)
+    turns_per_year   = occupied_nights / avg_stay_nights
+    platform_fee_ann = gross * platform_fee_pct
+    cleaning_annual  = turns_per_year * cleaning_pt
 
     expenses = ExpenseDetail(
-        property_tax=shared_opex["property_tax"],
-        insurance=shared_opex["insurance"] * 1.50,   # STR endorsement
-        hoa=shared_opex["hoa"],
-        maintenance=shared_opex["maintenance"] * 1.50,  # higher wear
-        capex=shared_opex["capex"],
-        property_mgmt=mgmt_fee,
-        vacancy_loss=0.0,   # absorbed into occupancy rate
-        utilities=utilities_monthly * 12,
-        furnishing_amort=furnishing_monthly * 12,
-        platform_fee=platform_fee_annual,
-        cleaning=cleaning_annual,
+        property_tax    = tax,
+        insurance       = insurance,
+        hoa             = hoa_annual,
+        maintenance     = maintenance,
+        capex           = capex,
+        property_mgmt   = 0.0,      # platform fees cover management
+        vacancy_loss    = 0.0,      # absorbed in occupancy rate
+        platform_fee    = platform_fee_ann,
+        cleaning        = cleaning_annual,
+        one_time_repair = mod.one_time_repair,
     )
 
     cash_opex = (
-        expenses.property_tax
-        + expenses.insurance
-        + expenses.hoa
-        + expenses.maintenance
-        + expenses.capex
-        + expenses.property_mgmt
-        + expenses.utilities
-        + expenses.furnishing_amort
-        + expenses.platform_fee
-        + expenses.cleaning
+        expenses.property_tax + expenses.insurance + expenses.hoa
+        + expenses.maintenance + expenses.capex
+        + expenses.platform_fee + expenses.cleaning
     )
-    noi = egi - cash_opex
+    noi    = egi - cash_opex
+    pmt    = _monthly_payment(loan_amount, rate, loan_term)
+    ann_ds = pmt * 12
+    ann_cf = noi - ann_ds - mod.one_time_repair
+    mo_cf  = ann_cf / 12
 
-    pmt = _monthly_payment(loan_amount, rate, loan_term)
-    annual_ds = pmt * 12
-    annual_cf = noi - annual_ds
-    monthly_cf = annual_cf / 12
-
-    # Break-even occupancy: what occupancy is needed to cover all cash costs?
-    # cash_opex_fixed (not occupancy-dependent) + (adr × occ × variable_pct) = annual_ds
-    # Solve: adr × 365 × occ_be × (1 - variable_pct) = cash_opex_fixed + annual_ds
-    variable_pct = platform_fee_pct + mgmt_rate  # costs that scale with revenue
-    fixed_opex = (
-        expenses.property_tax
-        + expenses.insurance
-        + expenses.hoa
-        + expenses.maintenance
-        + expenses.capex
-        + expenses.utilities
-        + expenses.furnishing_amort
+    # Break-even occupancy: what fraction of nights covers all costs + debt service?
+    # Solve: adr × occ_be × 365 × (1 − platform_fee_pct) − cleaning_per_night × 365 × occ_be
+    #        = fixed_opex + ann_ds
+    # where cleaning_per_night = cleaning_pt / avg_stay_nights
+    cleaning_per_night = cleaning_pt / avg_stay_nights
+    net_per_night      = adr * (1.0 - platform_fee_pct) - cleaning_per_night
+    fixed_opex         = (
+        tax + insurance + hoa_annual + maintenance + capex
     )
-    # cleaning also scales with occupancy; approximate via per-stay cost
-    cleaning_per_night = _safe_divide(cleaning_per_stay, avg_stay_nights)
-    # Revenue per night after variable costs: adr × (1 − variable_pct) − cleaning_per_night
-    net_revenue_per_night = adr * (1 - variable_pct) - cleaning_per_night
-    if net_revenue_per_night > 0:
-        be_nights = _safe_divide(fixed_opex + annual_ds, net_revenue_per_night)
-        break_even_occ = min(be_nights / 365, 1.0)
+    if net_per_night > 0:
+        be_nights = _safe_div(fixed_opex + ann_ds, net_per_night)
+        break_even_occ = min(be_nights / 365.0, 1.0)
     else:
         break_even_occ = 1.0
 
     return CashFlowResult(
-        strategy=Strategy.STR,
-        scenario=scenario,
-        scenario_label=SCENARIO_LABELS[scenario],
-        purchase_price=purchase_price,
-        loan_amount=loan_amount,
-        total_cash_invested=total_cash_invested,
-        revenue=RevenueDetail(
-            gross_annual_revenue=gross_annual,
-            vacancy_loss=0.0,
-            effective_gross_income=egi,
-        ),
-        expenses=expenses,
-        noi=noi,
-        annual_debt_service=annual_ds,
-        annual_cash_flow=annual_cf,
-        monthly_cash_flow=monthly_cf,
-        cap_rate=_safe_divide(noi, purchase_price),
-        cash_on_cash=_safe_divide(annual_cf, total_cash_invested),
-        grm=_safe_divide(purchase_price, gross_annual),
-        dscr=_safe_divide(noi, annual_ds),
-        break_even_occupancy=break_even_occ,
+        strategy       = Strategy.STR,
+        scenario       = scenario,
+        scenario_label = SCENARIO_LABELS[scenario],
+        purchase_price      = purchase_price,
+        loan_amount         = loan_amount,
+        total_cash_invested = total_cash_invested,
+        revenue  = RevenueDetail(gross, 0.0, egi),
+        expenses = expenses,
+        noi                 = noi,
+        annual_debt_service = ann_ds,
+        annual_cash_flow    = ann_cf,
+        monthly_cash_flow   = mo_cf,
+        cap_rate    = _safe_div(noi, purchase_price),
+        cash_on_cash= _safe_div(ann_cf, total_cash_invested),
+        grm         = _safe_div(purchase_price, gross),
+        dscr        = _safe_div(noi, ann_ds),
+        break_even_occupancy = break_even_occ,
+        seasonality_flag     = True,
     )
 
 
@@ -540,14 +525,15 @@ def _calc_str(
 
 def underwrite(prop: dict[str, Any]) -> UnderwritingResult:
     """
-    Underwrite a property across LTR, MTR, and STR strategies with five
-    stress-test scenarios each.
+    Underwrite a property across LTR, MTR, and STR strategies with a base case
+    and five individual stress-test scenarios each.
 
     Args:
         prop: Property dictionary. See module docstring for full key list.
+              Uses VA loan defaults (0% down, 2.15% funding fee rolled into loan).
 
     Returns:
-        UnderwritingResult containing StrategyResult objects for LTR, MTR, STR.
+        UnderwritingResult containing StrategyResults for LTR, MTR, STR.
 
     Raises:
         ValueError: If purchase_price is missing or ≤ 0.
@@ -556,55 +542,48 @@ def underwrite(prop: dict[str, Any]) -> UnderwritingResult:
     if not purchase_price or purchase_price <= 0:
         raise ValueError("property dict must include a positive 'purchase_price'")
 
-    down_pct = _get(prop, "down_payment_pct", 0.20)
-    base_rate = _get(prop, "interest_rate", 0.075)
-    loan_term = int(_get(prop, "loan_term_years", 30))
-    closing_pct = _get(prop, "closing_costs_pct", 0.03)
-    rehab = _get(prop, "rehab_cost", 0.0)
+    va_fee_pct   = _get(prop, "va_funding_fee_pct", 0.0215)
+    base_rate    = _get(prop, "interest_rate",       0.075)
+    loan_term    = int(_get(prop, "loan_term_years", 30))
+    closing_pct  = _get(prop, "closing_costs_pct",  0.03)
+    rehab        = _get(prop, "rehab_cost",           0.0)
 
-    down_payment = purchase_price * down_pct
-    loan_amount = purchase_price - down_payment
-    closing_costs = purchase_price * closing_pct
-    total_cash_invested = down_payment + closing_costs + rehab
+    # VA loan: 0% down, funding fee rolled into loan balance
+    funding_fee          = purchase_price * va_fee_pct
+    loan_amount          = purchase_price + funding_fee
+    closing_costs        = purchase_price * closing_pct
+    total_cash_invested  = closing_costs + rehab   # no down payment
 
-    # Shared annual operating expenses (strategy-agnostic base)
-    shared_opex = {
-        "property_tax": _get(prop, "property_tax_annual", purchase_price * 0.011),
-        "insurance":    _get(prop, "insurance_annual",    purchase_price * 0.005),
-        "hoa":          _get(prop, "hoa_monthly", 0.0) * 12,
-        "maintenance":  purchase_price * _get(prop, "maintenance_rate", 0.01),
-        "capex":        purchase_price * _get(prop, "capex_rate", 0.01),
-    }
+    # Base shared opex (stressed per-scenario inside each calc)
+    base_tax       = _get(prop, "property_tax_annual", purchase_price * 0.0077)
+    base_insurance = _get(prop, "insurance_annual",    purchase_price * 0.005)
+    hoa_annual     = _get(prop, "hoa_monthly", 0.0) * 12
 
-    def _run_all_scenarios(calc_fn):
-        result = {}
-        for scenario in Scenario:
-            result[scenario] = calc_fn(
-                prop=prop,
-                purchase_price=purchase_price,
-                loan_amount=loan_amount,
-                total_cash_invested=total_cash_invested,
-                base_rate=base_rate,
-                loan_term=loan_term,
-                shared_opex=shared_opex,
-                scenario=scenario,
-            )
-        return result
+    common = dict(
+        prop                = prop,
+        purchase_price      = purchase_price,
+        loan_amount         = loan_amount,
+        total_cash_invested = total_cash_invested,
+        base_rate           = base_rate,
+        loan_term           = loan_term,
+        base_tax            = base_tax,
+        base_insurance      = base_insurance,
+        hoa_annual          = hoa_annual,
+    )
 
-    ltr_scenarios = _run_all_scenarios(_calc_ltr)
-    mtr_scenarios = _run_all_scenarios(_calc_mtr)
-    str_scenarios = _run_all_scenarios(_calc_str)
+    ltr_scenarios  = {s: _ltr(**common, scenario=s) for s in Scenario}
+    mtr_scenarios  = {s: _mtr(**common, scenario=s) for s in Scenario}
+    str_scenarios  = {s: _str(**common, scenario=s) for s in Scenario}
 
-    # Base-case payment (for top-level summary)
     base_pmt = _monthly_payment(loan_amount, base_rate, loan_term)
 
     return UnderwritingResult(
-        purchase_price=purchase_price,
-        total_cash_invested=total_cash_invested,
-        loan_amount=loan_amount,
-        monthly_payment=base_pmt,
-        annual_debt_service=base_pmt * 12,
-        ltr=StrategyResult(strategy=Strategy.LTR, scenarios=ltr_scenarios),
-        mtr=StrategyResult(strategy=Strategy.MTR, scenarios=mtr_scenarios),
-        str_=StrategyResult(strategy=Strategy.STR, scenarios=str_scenarios),
+        purchase_price      = purchase_price,
+        loan_amount         = loan_amount,
+        total_cash_invested = total_cash_invested,
+        monthly_payment     = base_pmt,
+        annual_debt_service = base_pmt * 12,
+        ltr  = StrategyResult(Strategy.LTR, ltr_scenarios),
+        mtr  = StrategyResult(Strategy.MTR, mtr_scenarios),
+        str_ = StrategyResult(Strategy.STR, str_scenarios),
     )
