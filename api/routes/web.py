@@ -146,14 +146,37 @@ async def _try_db_save_assumptions(updates: dict) -> None:
         logger.warning("db_save_assumptions_failed", error=str(exc))
 
 
-async def _try_db_save_preset(preset: str) -> None:
+async def _try_db_save_preset(preset: str) -> bool:
+    """Returns True if the preset was applied, False if not found (e.g. empty my_settings)."""
     try:
         from db.connection import get_session
         from db.repositories.assumptions_repo import apply_preset
         async with get_session() as session:
-            await apply_preset(session, preset)
+            return await apply_preset(session, preset)
     except Exception as exc:
         logger.warning("db_apply_preset_failed", error=str(exc))
+        return False
+
+
+async def _try_db_save_my_settings(values: dict) -> None:
+    try:
+        from db.connection import get_session
+        from db.repositories.assumptions_repo import save_my_settings
+        async with get_session() as session:
+            await save_my_settings(session, values)
+    except Exception as exc:
+        logger.warning("db_save_my_settings_failed", error=str(exc))
+
+
+async def _try_db_get_my_settings_exists() -> bool:
+    try:
+        from db.connection import get_session
+        from db.repositories.assumptions_repo import get_my_settings_snapshot
+        async with get_session() as session:
+            snap = await get_my_settings_snapshot(session)
+        return snap is not None
+    except Exception:
+        return False
 
 
 async def _try_db_audit_log() -> list[dict] | None:
@@ -167,13 +190,19 @@ async def _try_db_audit_log() -> list[dict] | None:
         return None
 
 
-async def _try_db_record_outcome(deal_id: str, outcome: str, notes: str = "") -> None:
+async def _try_db_record_outcome(
+    deal_id: str,
+    outcome: str,
+    notes: str = "",
+    offer_price: float | None = None,
+) -> None:
     try:
         from db.connection import get_session
         from db.repositories.outcome_repo import record_outcome
         from db.repositories.property_repo import update_property_status
         async with get_session() as session:
-            await record_outcome(session, deal_id, outcome, notes=notes)
+            await record_outcome(session, deal_id, outcome, notes=notes,
+                                 offer_price=offer_price)
             if outcome in ("pursued", "offer_made", "closed"):
                 await update_property_status(session, deal_id, "shortlisted")
     except Exception as exc:
@@ -252,6 +281,16 @@ async def shortlist(request: Request):
     })
 
 
+async def _try_db_mark_viewed(deal_id: str) -> None:
+    try:
+        from db.connection import get_session
+        from db.repositories.outcome_repo import mark_viewed
+        async with get_session() as session:
+            await mark_viewed(session, deal_id)
+    except Exception:
+        pass  # non-critical; never surface to user
+
+
 @router.get("/deal/{deal_id}", response_class=HTMLResponse)
 async def deal_detail(request: Request, deal_id: str):
     deal = await _try_db_deal(deal_id)
@@ -262,6 +301,8 @@ async def deal_detail(request: Request, deal_id: str):
         deal = next((d for d in all_ds if d.get("canonical_id") == deal_id), None)
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
+    # Stamp viewed_at on first open (mark_viewed is idempotent — skips if already set)
+    await _try_db_mark_viewed(deal_id)
     return _tmpl(request, "deal_detail.html", {"deal": deal, "active_tab": "inbox"})
 
 
@@ -273,7 +314,7 @@ async def update_outcome(
     offer_price: str = Form(""),
 ):
     offer = float(offer_price) if offer_price.strip() else None
-    await _try_db_record_outcome(deal_id, outcome, notes=notes)
+    await _try_db_record_outcome(deal_id, outcome, notes=notes, offer_price=offer)
 
     # Mirror to in-memory store for session consistency
     store = get_store()
@@ -331,11 +372,12 @@ async def assumptions_page(request: Request):
         ),
     }
     assump = await _try_db_assumptions() or _default_assumptions()
+    my_settings_exists = await _try_db_get_my_settings_exists()
     return _tmpl(request, "assumptions.html", {
-        "assumptions": assump,
-        "va_rate":     va_rate_ctx,
-        "active_tab":  "assumptions",
-        "presets":     list(["conservative", "base", "optimistic", "custom"]),
+        "assumptions":        assump,
+        "va_rate":            va_rate_ctx,
+        "active_tab":         "assumptions",
+        "my_settings_exists": my_settings_exists,
     })
 
 
@@ -401,9 +443,41 @@ async def update_assumptions(
 @router.post("/assumptions/preset/{preset_name}")
 async def apply_preset(preset_name: str):
     """Apply a named preset and redirect to assumptions page."""
-    if preset_name not in ("conservative", "base", "optimistic"):
+    if preset_name not in ("conservative", "base", "optimistic", "my_settings"):
         raise HTTPException(status_code=400, detail="Unknown preset")
-    await _try_db_save_preset(preset_name)
+    applied = await _try_db_save_preset(preset_name)
+    if not applied and preset_name == "my_settings":
+        # No snapshot saved yet — redirect back without applying
+        return RedirectResponse(url="/assumptions?error=no_my_settings", status_code=303)
+    return RedirectResponse(url="/assumptions", status_code=303)
+
+
+@router.post("/assumptions/save-my-settings")
+async def save_my_settings_route(
+    interest_rate:    float = Form(7.5),
+    insurance_pct:    float = Form(0.5),
+    ltr_vacancy:      float = Form(8.0),
+    mtr_vacancy:      float = Form(10.0),
+    str_vacancy:      float = Form(25.0),
+    mgmt_rate:        float = Form(8.0),
+    capex_rate:       float = Form(0.5),
+    maintenance_rate: float = Form(1.0),
+):
+    """Snapshot the current form values as My Settings and activate that preset."""
+    # Values arrive as display percentages; convert to decimals for storage
+    decimal_vals = {
+        "interest_rate":    interest_rate / 100,
+        "insurance_pct":    insurance_pct / 100,
+        "ltr_vacancy":      ltr_vacancy / 100,
+        "mtr_vacancy":      mtr_vacancy / 100,
+        "str_vacancy":      str_vacancy / 100,
+        "mgmt_rate":        mgmt_rate / 100,
+        "capex_rate":       capex_rate / 100,
+        "maintenance_rate": maintenance_rate / 100,
+    }
+    await _try_db_save_my_settings(decimal_vals)
+    # Also persist the live values to the assumptions row so they take effect immediately
+    await _try_db_save_assumptions({**decimal_vals, "active_preset": "my_settings"})
     return RedirectResponse(url="/assumptions", status_code=303)
 
 

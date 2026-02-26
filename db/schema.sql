@@ -224,7 +224,10 @@ CREATE TABLE IF NOT EXISTS assumptions (
 
     -- Assumptions preset
     active_preset       TEXT             NOT NULL DEFAULT 'custom'
-                        CHECK (active_preset IN ('conservative', 'base', 'optimistic', 'custom'))
+                        CHECK (active_preset IN ('conservative', 'base', 'optimistic', 'custom', 'my_settings')),
+
+    -- User-saved "My Settings" snapshot (nullable until the user saves one)
+    my_settings_snapshot JSONB           DEFAULT NULL
 );
 
 -- Seed default row

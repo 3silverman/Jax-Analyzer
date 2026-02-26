@@ -28,12 +28,34 @@
       </button>
     </form>
     {% endfor %}
-    {% if active_preset not in ('conservative', 'base', 'optimistic') %}
+
+    {# ── My Settings button ──────────────────────────────────────────── #}
+    {% if my_settings_exists %}
+    <form action="/assumptions/preset/my_settings" method="post" style="margin:0">
+      <button type="submit" class="btn {{ 'btn-primary' if active_preset == 'my_settings' else 'btn-outline' }}"
+              style="font-size:13px;padding:6px 14px" title="Load your saved custom settings">
+        My Settings
+        {% if active_preset == 'my_settings' %}
+        <span style="font-size:10px;margin-left:4px;opacity:0.8">✓ active</span>
+        {% endif %}
+      </button>
+    </form>
+    {% else %}
+    <button type="button" class="btn btn-outline"
+            style="font-size:13px;padding:6px 14px;opacity:0.45;cursor:not-allowed"
+            title="Save your current settings first using 'Save as My Settings' below"
+            disabled>
+      My Settings
+    </button>
+    {% endif %}
+
+    {% if active_preset not in ('conservative', 'base', 'optimistic', 'my_settings') %}
     <span class="badge badge-preset" style="align-self:center">Custom Settings Active</span>
     {% endif %}
   </div>
   <p style="font-size:11px;color:#718096;margin-top:8px">
-    Selecting a preset overwrites all rate fields below. Save &amp; Recalculate to apply manual overrides.
+    Selecting a preset overwrites all rate fields below.
+    Use <strong>Save as My Settings</strong> (bottom of form) to capture a custom snapshot.
   </p>
 </div>
 
@@ -109,9 +131,17 @@
   <input type="number" name="maintenance_rate" value="{{ assumptions.maintenance_rate }}" step="0.1" min="0" max="5">
 </div>
 
-<div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap">
+<div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap;align-items:center">
   <button type="submit" class="btn btn-primary">Save &amp; Recalculate</button>
   <a href="/assumptions" class="btn btn-outline">Reset</a>
+  <span style="color:#cbd5e0;margin:0 4px">|</span>
+  {# Save as My Settings — submits the same form fields to a different endpoint #}
+  <button type="submit" formaction="/assumptions/save-my-settings"
+          class="btn btn-outline"
+          style="border-color:#4299e1;color:#2b6cb0"
+          title="Snapshot the current values as your personal My Settings preset">
+    💾 Save as My Settings
+  </button>
 </div>
 </form>
 </div>

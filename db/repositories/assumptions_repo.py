@@ -42,9 +42,42 @@ _PRESETS: dict[str, dict[str, Any]] = {
 }
 
 
+_RATE_FIELDS = (
+    "interest_rate", "insurance_pct", "ltr_vacancy", "mtr_vacancy",
+    "str_vacancy", "mgmt_rate", "capex_rate", "maintenance_rate",
+)
+
+
 def get_preset_values(preset_name: str) -> dict[str, Any] | None:
-    """Return the rate values for a named preset, or None if custom/unknown."""
+    """Return the rate values for a built-in named preset, or None if unknown/my_settings."""
     return _PRESETS.get(preset_name)
+
+
+async def get_my_settings_snapshot(session: AsyncSession) -> dict[str, Any] | None:
+    """Return the stored My Settings snapshot, or None if never saved."""
+    result = await session.execute(
+        text("SELECT my_settings_snapshot FROM assumptions WHERE id = 1")
+    )
+    row = result.mappings().first()
+    if row and row["my_settings_snapshot"]:
+        return dict(row["my_settings_snapshot"])
+    return None
+
+
+async def save_my_settings(session: AsyncSession, values: dict[str, Any]) -> None:
+    """Snapshot the given rate values as My Settings and set it as the active preset."""
+    import json as _json
+    snapshot = {k: values[k] for k in _RATE_FIELDS if k in values}
+    await session.execute(
+        text(
+            "UPDATE assumptions "
+            "SET my_settings_snapshot = :snap::jsonb, "
+            "    active_preset = 'my_settings', "
+            "    updated_at = NOW() "
+            "WHERE id = 1"
+        ),
+        {"snap": _json.dumps(snapshot)},
+    )
 
 
 async def get_assumptions(session: AsyncSession) -> dict[str, Any]:
@@ -72,13 +105,26 @@ async def update_assumptions(session: AsyncSession, updates: dict[str, Any]) -> 
     )
 
 
-async def apply_preset(session: AsyncSession, preset_name: str) -> None:
-    """Apply a named preset's rate values and record which preset is active."""
+async def apply_preset(session: AsyncSession, preset_name: str) -> bool:
+    """Apply a named preset's rate values and record which preset is active.
+
+    Returns True if the preset was applied, False if not found (e.g. my_settings
+    with no saved snapshot).
+    """
+    if preset_name == "my_settings":
+        snapshot = await get_my_settings_snapshot(session)
+        if snapshot is None:
+            return False  # nothing saved yet
+        updates = {**snapshot, "active_preset": "my_settings"}
+        await update_assumptions(session, updates)
+        return True
+
     values = get_preset_values(preset_name)
     if values is None:
-        return
+        return False
     updates = {**values, "active_preset": preset_name}
     await update_assumptions(session, updates)
+    return True
 
 
 async def update_va_rate(
