@@ -60,27 +60,28 @@ class RentcastClient:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def get_property(self, address: str, zip_code: str) -> dict[str, Any] | None:
+    def get_rent_estimate(
+        self,
+        address: str,
+        zip_code: str,
+        property_type: str | None = None,
+        bedrooms: int | None = None,
+        bathrooms: float | None = None,
+    ) -> dict[str, Any] | None:
         """
-        Fetch property details by street address.
+        Fetch an AVM rent estimate for an address (LTR).
 
-        Returns raw dict or None if not found.
-        """
-        logger.info("rentcast_get_property", address=address, zip_code=zip_code)
-        params = {"address": address, "zipCode": zip_code}
-        result = self._get("properties", params=params)
-        if result is None:
-            logger.warning("rentcast_property_not_found", address=address)
-        return result
-
-    def get_rent_estimate(self, address: str, zip_code: str) -> dict[str, Any] | None:
-        """
-        Fetch rent estimate for an address (LTR).
-
-        Returns raw dict including rentEstimate, rentRange, comparables.
+        Returns raw dict including rent, rentRangeLow, rentRangeHigh, comparables.
+        Optional params narrow the estimate to a specific property type / bed count.
         """
         logger.info("rentcast_rent_estimate", address=address, zip_code=zip_code)
-        params = {"address": address, "zipCode": zip_code}
+        params: dict[str, Any] = {"address": address, "zipCode": zip_code}
+        if property_type:
+            params["propertyType"] = property_type
+        if bedrooms is not None:
+            params["bedrooms"] = bedrooms
+        if bathrooms is not None:
+            params["bathrooms"] = bathrooms
         return self._get("avm/rent/long-term", params=params)
 
     def get_rent_comps(

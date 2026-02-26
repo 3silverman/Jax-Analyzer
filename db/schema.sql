@@ -252,3 +252,14 @@ CREATE TABLE IF NOT EXISTS crime_grade_overrides (
     set_by          TEXT        NOT NULL DEFAULT 'manual',
     set_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- ── rentcast_cache ─────────────────────────────────────────────
+-- Per-property cache for Rentcast API calls.  TTL = 7 days.
+-- Prevents repeat calls for the same listing sitting unsold across scans.
+CREATE TABLE IF NOT EXISTS rentcast_cache (
+    canonical_id    TEXT        PRIMARY KEY,   -- property's canonical_id
+    zip_code        TEXT        NOT NULL,
+    ltr_estimate    DOUBLE PRECISION,          -- result of get_rent_estimate() (per month, all units)
+    fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

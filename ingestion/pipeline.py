@@ -51,40 +51,207 @@ def _median_rate(comps: list[RentalComp]) -> float | None:
     return rates[len(rates) // 2]
 
 
-# ── Rentcast fallback ──────────────────────────────────────────────────────────
+# ── Rentcast — cache + comps + estimate ───────────────────────────────────────
 
-def _try_rentcast_rates(
-    record: PropertyRecord,
-    assumptions: dict,
-) -> tuple[float | None, float | None]:
+_RENTCAST_CACHE_TTL_DAYS = 7
+
+
+def _sync_db(coro: Any, default: Any = None) -> Any:
+    """Run an async DB coroutine from synchronous pipeline code.
+
+    Uses a thread-pool executor when a loop is already running (APScheduler),
+    falls back to asyncio.run() otherwise.  Always returns `default` on error.
+    """
+    import asyncio
     try:
-        api_key = os.environ.get("RENTCAST_API_KEY", "")
-        if not api_key:
-            return None, None
+        try:
+            asyncio.get_running_loop()
+            # A loop is already running — delegate to a worker thread.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, coro).result(timeout=10)
+        except RuntimeError:
+            # No running loop — safe to call asyncio.run() directly.
+            return asyncio.run(coro)
+    except Exception as exc:
+        logger.debug("sync_db_error", error=str(exc))
+        return default
 
+
+def _dedupe_comps_by_address(comps: list[RentalComp]) -> list[RentalComp]:
+    """Return comps deduplicated by normalised address; first occurrence wins."""
+    seen: set[str] = set()
+    out: list[RentalComp] = []
+    for comp in comps:
+        key = comp.address.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            out.append(comp)
+    return out
+
+
+async def _store_rentcast_comps_async(
+    comps: list[RentalComp], property_id: str
+) -> None:
+    """Persist Rentcast comps to rental_comps (best-effort, no raise)."""
+    from db.connection import get_session
+    from db.repositories.comp_repo import upsert_comp
+    async with get_session() as session:
+        for comp in comps:
+            await upsert_comp(session, {
+                "canonical_id":       comp.canonical_id,
+                "property_id":        property_id,
+                "source":             comp.source.value,
+                "source_id":          comp.source_id,
+                "scraped_at":         comp.scraped_at,
+                "address":            comp.address,
+                "zip_code":           comp.zip_code,
+                "lat":                comp.lat,
+                "lon":                comp.lon,
+                "beds":               comp.beds,
+                "baths":              comp.baths,
+                "sqft":               comp.sqft,
+                "rental_strategy":    comp.rental_strategy.value,
+                "monthly_rate":       comp.monthly_rate,
+                "adr":                comp.adr,
+                "utilities_included": comp.utilities_included,
+                "raw":                comp.raw,
+            })
+
+
+def _try_rentcast_cached(
+    record: PropertyRecord,
+    apify_comp_count: int,
+) -> tuple[list[RentalComp], float | None]:
+    """Return (supplemental_comps, ltr_estimate) with 7-day DB caching.
+
+    Logic:
+    1. Check rentcast_cache — if entry is < 7 days old, return cached ltr_estimate
+       with no API calls (comps from previous run are already stored in rental_comps).
+    2. Cache miss: call get_rent_comps() when apify_comp_count < 3 and lat/lon known,
+       normalise results to RentalComp, merge into rental_comps table.
+    3. If still no comps after supplement, call get_rent_estimate() as last resort.
+    4. Upsert rentcast_cache with fetched_at = NOW().
+    """
+    from datetime import datetime, timezone
+
+    api_key = os.environ.get("RENTCAST_API_KEY", "")
+    if not api_key:
+        return [], None
+
+    # ── 1. Check cache ─────────────────────────────────────────────────────────
+    cached: dict | None = None
+    try:
+        async def _read_cache() -> dict | None:
+            from db.connection import get_session
+            from db.repositories.rentcast_cache_repo import get_cached_rentcast
+            async with get_session() as session:
+                return await get_cached_rentcast(session, record.canonical_id)
+
+        cached = _sync_db(_read_cache())
+    except Exception as exc:
+        logger.debug("rentcast_cache_read_error", error=str(exc))
+
+    if cached:
+        fetched_at = cached["fetched_at"]
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - fetched_at).days
+        if age_days < _RENTCAST_CACHE_TTL_DAYS:
+            logger.info(
+                "rentcast_cache_hit",
+                canonical_id=record.canonical_id,
+                age_days=age_days,
+            )
+            return [], cached.get("ltr_estimate")
+
+    # ── 2. Cache miss — call live API ──────────────────────────────────────────
+    rc_comps: list[RentalComp] = []
+    ltr_estimate: float | None = None
+
+    try:
         from ingestion.rentcast_client import RentcastClient, RentcastError
+        from normalization.normalizer import normalize_rentcast_comp
 
         client = RentcastClient(api_key=api_key)
         num_units = record.num_units or 1
 
-        try:
-            estimate = client.get_rent_estimate(
-                address=record.address,
-                property_type=str(record.property_type),
-                bedrooms=record.beds,
-                bathrooms=record.baths,
-            )
-            ltr_rate = estimate.get("rent") or estimate.get("rentRangeLow")
-            if ltr_rate:
-                return float(ltr_rate) * num_units, None
-        except RentcastError as e:
-            logger.warning("rentcast_fallback_error", address=record.address, error=str(e))
+        # get_rent_comps() — supplement when Apify is thin
+        if apify_comp_count < 3 and record.lat and record.lon:
+            try:
+                beds_per_unit = max(1, round((record.beds or num_units) / num_units))
+                raw_comps = client.get_rent_comps(
+                    lat=record.lat,
+                    lon=record.lon,
+                    beds=beds_per_unit,
+                    radius_miles=0.5,
+                    limit=25,
+                )
+                rc_comps = [
+                    normalize_rentcast_comp(r, subject_zip=record.zip_code)
+                    for r in raw_comps
+                    if r.get("price")
+                ]
+                logger.info(
+                    "rentcast_comps_fetched",
+                    address=record.address,
+                    count=len(rc_comps),
+                )
+                if rc_comps:
+                    _sync_db(
+                        _store_rentcast_comps_async(rc_comps, record.canonical_id)
+                    )
+            except RentcastError as exc_comps:
+                logger.warning(
+                    "rentcast_comps_error",
+                    address=record.address,
+                    error=str(exc_comps),
+                )
 
-        return None, None
+        # get_rent_estimate() — last resort when there are still no comps
+        if apify_comp_count + len(rc_comps) == 0:
+            try:
+                estimate = client.get_rent_estimate(
+                    address=record.address,
+                    zip_code=record.zip_code,
+                    property_type=str(record.property_type),
+                    bedrooms=record.beds,
+                    bathrooms=record.baths,
+                )
+                if estimate:
+                    raw_rate = estimate.get("rent") or estimate.get("rentRangeLow")
+                    if raw_rate:
+                        ltr_estimate = float(raw_rate) * num_units
+                logger.info(
+                    "rentcast_estimate_fetched",
+                    address=record.address,
+                    ltr=ltr_estimate,
+                )
+            except RentcastError as exc_est:
+                logger.warning(
+                    "rentcast_estimate_error",
+                    address=record.address,
+                    error=str(exc_est),
+                )
 
     except Exception as exc:
-        logger.warning("rentcast_fallback_unexpected", address=record.address, error=str(exc))
-        return None, None
+        logger.warning("rentcast_unexpected", address=record.address, error=str(exc))
+
+    # ── 3. Update cache ────────────────────────────────────────────────────────
+    try:
+        async def _write_cache() -> None:
+            from db.connection import get_session
+            from db.repositories.rentcast_cache_repo import upsert_rentcast_cache
+            async with get_session() as session:
+                await upsert_rentcast_cache(
+                    session, record.canonical_id, record.zip_code, ltr_estimate
+                )
+
+        _sync_db(_write_cache())
+    except Exception as exc:
+        logger.debug("rentcast_cache_write_error", error=str(exc))
+
+    return rc_comps, ltr_estimate
 
 
 # ── AirDNA STR validation ──────────────────────────────────────────────────────
@@ -489,19 +656,28 @@ def run_pipeline(
             # ── Comps ──────────────────────────────────────────────────────────
             ltr_comps   = _ltr_comps_for(record, scan_result.ltr_comps)
             mtr_comps   = _mtr_comps_for(record, scan_result.mtr_comps)
+            apify_count = len(ltr_comps) + len(mtr_comps)
+
+            # Supplement with Rentcast comps when Apify is thin (< 3 total).
+            # Cache prevents repeat API calls for the same listing day-over-day.
+            rc_comps, rentcast_ltr = _try_rentcast_cached(record, apify_count)
+            if rc_comps:
+                ltr_comps = _dedupe_comps_by_address(ltr_comps + rc_comps)
+
             all_comps   = ltr_comps + mtr_comps
             comps_count = len(ltr_comps) + len(mtr_comps)
 
             # ── Underwriting ───────────────────────────────────────────────────
             prop_dict = _build_prop_dict(record, assumptions)
 
-            if not all_comps:
-                rentcast_ltr, rentcast_mtr = _try_rentcast_rates(record, assumptions)
-                if rentcast_ltr:
-                    prop_dict["monthly_rent"] = rentcast_ltr
-                    logger.info("rentcast_fallback_used", address=record.address, ltr=rentcast_ltr)
-                if rentcast_mtr:
-                    prop_dict["mtr_monthly_rate"] = rentcast_mtr
+            # Fall back to Rentcast estimate only when there are truly no comps
+            if not all_comps and rentcast_ltr:
+                prop_dict["monthly_rent"] = rentcast_ltr
+                logger.info(
+                    "rentcast_estimate_applied",
+                    address=record.address,
+                    ltr=rentcast_ltr,
+                )
 
             # AirDNA STR validation
             airdna_monthly, str_validated = _try_airdna_str(record)
@@ -600,17 +776,18 @@ def run_pipeline(
         cards = []
         for rec, ds in pairs:
             try:
-                ltr_comps   = _ltr_comps_for(rec, scan_result.ltr_comps)
-                mtr_comps   = _mtr_comps_for(rec, scan_result.mtr_comps)
-                all_comps   = ltr_comps + mtr_comps
-                prop_dict   = _build_prop_dict(rec, assumptions)
+                ltr_comps    = _ltr_comps_for(rec, scan_result.ltr_comps)
+                mtr_comps    = _mtr_comps_for(rec, scan_result.mtr_comps)
+                apify_count  = len(ltr_comps) + len(mtr_comps)
+                # Cache hit expected here — all properties were processed in first pass.
+                rc_comps, rentcast_ltr = _try_rentcast_cached(rec, apify_count)
+                if rc_comps:
+                    ltr_comps = _dedupe_comps_by_address(ltr_comps + rc_comps)
+                all_comps    = ltr_comps + mtr_comps
+                prop_dict    = _build_prop_dict(rec, assumptions)
 
-                if not all_comps:
-                    rentcast_ltr, rentcast_mtr = _try_rentcast_rates(rec, assumptions)
-                    if rentcast_ltr:
-                        prop_dict["monthly_rent"] = rentcast_ltr
-                    if rentcast_mtr:
-                        prop_dict["mtr_monthly_rate"] = rentcast_mtr
+                if not all_comps and rentcast_ltr:
+                    prop_dict["monthly_rent"] = rentcast_ltr
 
                 airdna_monthly, _ = _try_airdna_str(rec)
                 uw_result   = underwrite(prop_dict, comps=all_comps if all_comps else None)

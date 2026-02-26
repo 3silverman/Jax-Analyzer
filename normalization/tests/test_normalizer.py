@@ -10,6 +10,7 @@ import pytest
 
 from normalization.normalizer import (
     normalize_furnished_finder,
+    normalize_rentcast_comp,
     normalize_rentcast_property,
     normalize_zillow_listing,
     normalize_zillow_rental,
@@ -227,3 +228,78 @@ class TestNormalizeRentcastProperty:
 
     def test_year_built(self) -> None:
         assert self.rec.year_built == 1948
+
+
+# ── normalize_rentcast_comp ────────────────────────────────────────────────────
+
+_RENTCAST_COMP_RAW = {
+    "id":               "rc_comp_001",
+    "formattedAddress": "321 Riverside Ave, Jacksonville, FL 32204",
+    "zipCode":          "32204",
+    "latitude":         30.3170,
+    "longitude":        -81.6630,
+    "bedrooms":         2,
+    "bathrooms":        1.0,
+    "squareFootage":    950,
+    "price":            1450.0,
+    "utilitiesIncluded": False,
+}
+
+
+class TestNormalizeRentcastComp:
+    def setup_method(self) -> None:
+        self.comp = normalize_rentcast_comp(_RENTCAST_COMP_RAW)
+
+    def test_source_is_rentcast(self) -> None:
+        assert self.comp.source == DataSource.RENTCAST
+
+    def test_source_id(self) -> None:
+        assert self.comp.source_id == "rc_comp_001"
+
+    def test_address(self) -> None:
+        assert "321 Riverside" in self.comp.address
+
+    def test_zip_code(self) -> None:
+        assert self.comp.zip_code == "32204"
+
+    def test_lat_lon(self) -> None:
+        assert self.comp.lat == pytest.approx(30.3170)
+        assert self.comp.lon == pytest.approx(-81.6630)
+
+    def test_beds_baths_sqft(self) -> None:
+        assert self.comp.beds == 2
+        assert self.comp.baths == pytest.approx(1.0)
+        assert self.comp.sqft == pytest.approx(950.0)
+
+    def test_monthly_rate(self) -> None:
+        assert self.comp.monthly_rate == pytest.approx(1450.0)
+
+    def test_rental_strategy_ltr(self) -> None:
+        assert self.comp.rental_strategy == RentalStrategy.LTR
+
+    def test_adr_is_none(self) -> None:
+        assert self.comp.adr is None
+
+    def test_utilities_included_false(self) -> None:
+        assert self.comp.utilities_included is False
+
+    def test_canonical_id_deterministic(self) -> None:
+        other = normalize_rentcast_comp(_RENTCAST_COMP_RAW)
+        assert self.comp.canonical_id == other.canonical_id
+
+    def test_fallback_zip_from_subject(self) -> None:
+        raw = {**_RENTCAST_COMP_RAW, "zipCode": ""}
+        comp = normalize_rentcast_comp(raw, subject_zip="32205")
+        assert comp.zip_code == "32205"
+
+    def test_missing_price_returns_none_rate(self) -> None:
+        raw = {k: v for k, v in _RENTCAST_COMP_RAW.items() if k != "price"}
+        comp = normalize_rentcast_comp(raw)
+        assert comp.monthly_rate is None
+
+    def test_uses_addressLine1_fallback(self) -> None:
+        raw = {**_RENTCAST_COMP_RAW}
+        del raw["formattedAddress"]
+        raw["addressLine1"] = "999 Elm St"
+        comp = normalize_rentcast_comp(raw)
+        assert "999 Elm" in comp.address

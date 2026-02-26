@@ -284,3 +284,35 @@ def normalize_rentcast_property(raw: dict[str, Any]) -> PropertyRecord:
         raw           = raw,
     )
     return annotate(record)
+
+
+def normalize_rentcast_comp(raw: dict[str, Any], subject_zip: str = "") -> RentalComp:
+    """
+    Normalize a single Rentcast rental-listing dict into a RentalComp.
+
+    Rentcast /v1/listings/rental/long-term fields:
+        id, formattedAddress, addressLine1, city, state, zipCode,
+        latitude, longitude, bedrooms, bathrooms, squareFootage,
+        price  (monthly rent), utilitiesIncluded
+    """
+    address  = str(raw.get("formattedAddress") or raw.get("addressLine1") or "").strip()
+    zip_code = str(raw.get("zipCode") or subject_zip or "").strip()[:5]
+
+    return RentalComp(
+        canonical_id       = make_canonical_id(address, zip_code),
+        source             = DataSource.RENTCAST,
+        source_id          = str(raw.get("id") or ""),
+        scraped_at         = _now_utc(),
+        address            = address,
+        zip_code           = zip_code,
+        lat                = _to_float(raw.get("latitude")),
+        lon                = _to_float(raw.get("longitude")),
+        beds               = _to_int(raw.get("bedrooms")),
+        baths              = _to_float(raw.get("bathrooms")),
+        sqft               = _to_float(raw.get("squareFootage")),
+        rental_strategy    = RentalStrategy.LTR,
+        monthly_rate       = _to_float(raw.get("price")),
+        adr                = None,
+        utilities_included = bool(raw.get("utilitiesIncluded", False)),
+        raw                = raw,
+    )
