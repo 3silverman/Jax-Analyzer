@@ -9,7 +9,7 @@
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
            background: #f5f5f5; color: #1a1a1a; font-size: 14px; }
     header { background: #1a2744; color: #fff; padding: 0 24px; display: flex;
-             align-items: center; height: 52px; gap: 32px; }
+             align-items: center; height: 52px; gap: 32px; position: relative; }
     header h1 { font-size: 16px; font-weight: 700; white-space: nowrap; }
     nav { display: flex; gap: 4px; flex: 1; }
     nav a { color: #a0aec0; text-decoration: none; padding: 6px 14px; border-radius: 4px;
@@ -23,9 +23,10 @@
     .badge-good   { background: #c6f6d5; color: #276749; }
     .badge-ok     { background: #fefcbf; color: #744210; }
     .badge-low    { background: #e2e8f0; color: #4a5568; }
+    .badge-preset { background: #bee3f8; color: #2b6cb0; }
     .score-ring   { display: inline-flex; align-items: center; justify-content: center;
                     width: 48px; height: 48px; border-radius: 50%; font-weight: 800;
-                    font-size: 16px; border: 3px solid; }
+                    font-size: 16px; border: 3px solid; flex-shrink: 0; }
     .score-85plus { border-color: #e53e3e; color: #e53e3e; background: #fff5f5; }
     .score-60     { border-color: #38a169; color: #38a169; background: #f0fff4; }
     .score-40     { border-color: #d69e2e; color: #d69e2e; background: #fffff0; }
@@ -51,6 +52,7 @@
     .pill-red   { background: #fed7d7; color: #9b2c2c; }
     .pill-green { background: #c6f6d5; color: #22543d; }
     .pill-yellow { background: #fefcbf; color: #744210; }
+    .pill-blue  { background: #bee3f8; color: #2b6cb0; }
     .flash-msg { background: #c6f6d5; border: 1px solid #9ae6b4; color: #22543d;
                  padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; }
     .empty-state { text-align: center; padding: 60px 20px; color: #718096; }
@@ -60,23 +62,57 @@
     form label { display: block; font-size: 12px; font-weight: 600; color: #4a5568;
                  margin-bottom: 4px; margin-top: 12px; }
     .street-view-thumb { width: 200px; height: 130px; object-fit: cover; border-radius: 6px;
-                         border: 1px solid #e2e8f0; }
+                         border: 1px solid #e2e8f0; flex-shrink: 0; }
+    /* Hamburger button (hidden on desktop) */
+    .hamburger { display: none; background: none; border: none; cursor: pointer;
+                 padding: 4px 8px; margin-left: auto; }
+    .hamburger span { display: block; width: 22px; height: 2px; background: #a0aec0;
+                      margin: 5px 0; transition: 0.2s; }
+    /* Mobile nav drawer */
+    .mobile-nav { display: none; }
+
+    @media (max-width: 768px) {
+      header { padding: 0 16px; gap: 16px; flex-wrap: wrap; height: auto;
+               padding-top: 12px; padding-bottom: 12px; }
+      header h1 { font-size: 15px; }
+      nav { display: none; flex-direction: column; width: 100%; gap: 2px;
+            padding-bottom: 8px; }
+      nav.open { display: flex; }
+      nav a { padding: 8px 12px; font-size: 14px; }
+      .hamburger { display: block; }
+      .container { padding: 16px 12px; }
+      .card { padding: 14px; }
+      .card-grid { grid-template-columns: 1fr 1fr; }
+      .street-view-thumb { width: 100%; height: 160px; margin-bottom: 12px; }
+      .run-scan-btn { display: none; }
+      table { font-size: 12px; }
+      th, td { padding: 8px 8px; }
+    }
+
+    @media (max-width: 480px) {
+      .card-grid { grid-template-columns: 1fr; }
+      .score-ring { width: 40px; height: 40px; font-size: 14px; }
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>JAX Analyzer</h1>
-    <nav>
+    <nav id="main-nav">
       <a href="/inbox"       class="{{ 'active' if active_tab == 'inbox'       else '' }}">Inbox</a>
       <a href="/rejected"    class="{{ 'active' if active_tab == 'rejected'    else '' }}">Rejected</a>
       <a href="/shortlist"   class="{{ 'active' if active_tab == 'shortlist'   else '' }}">Shortlist</a>
+      <a href="/analytics"   class="{{ 'active' if active_tab == 'analytics'   else '' }}">Analytics</a>
       <a href="/settings"    class="{{ 'active' if active_tab == 'settings'    else '' }}">Settings</a>
       <a href="/assumptions" class="{{ 'active' if active_tab == 'assumptions' else '' }}">Assumptions</a>
       <a href="/audit"       class="{{ 'active' if active_tab == 'audit'       else '' }}">Audit Log</a>
     </nav>
-    <form action="/scan/run" method="post" style="margin:0">
+    <form action="/scan/run" method="post" style="margin:0" class="run-scan-btn">
       <button class="btn btn-outline btn-sm" style="color:#a0aec0;border-color:#374a6d">Run Scan</button>
     </form>
+    <button class="hamburger" onclick="document.getElementById('main-nav').classList.toggle('open')" aria-label="Toggle navigation">
+      <span></span><span></span><span></span>
+    </button>
   </header>
   <div class="container">
     {% block content %}{% endblock %}

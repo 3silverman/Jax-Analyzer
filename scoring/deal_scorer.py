@@ -99,6 +99,9 @@ def _generate_explanation(
             f"provides a meaningful debt-service buffer."
         )
 
+    if return_s.adu_bonus:
+        parts.append("ADU income diversification adds resilience vs single-unit SFH.")
+
     if risk_s.risk_flags:
         flag_summary = "; ".join(risk_s.risk_flags[:2])
         parts.append(f"Key risks to review: {flag_summary}.")
@@ -131,6 +134,8 @@ def score_deal(
     num_units: int | None = None,
     strategy_validated: bool = False,
     confidence_penalty: bool = False,
+    # Property type (for SFH differentiation)
+    property_type: str | None = None,
 ) -> DealScore:
     """
     Compute the full Deal Score for a property.
@@ -151,9 +156,9 @@ def score_deal(
         address:          Property address string.
         num_units:        Number of units.
         strategy_validated: At least one strategy backed by comps.
-        confidence_penalty: If True, Confidence Score is hard-capped at 19 so
-                            the property cannot trigger a high-priority alert.
-                            Set when underwriting has no live comp or Rentcast data.
+        confidence_penalty: If True, Confidence Score is hard-capped at 19.
+        property_type:    PropertyType string (e.g. "sfr", "sfr_adu", "duplex").
+                          Used for SFH vacancy risk (-2 for "sfr") and ADU bonus (+3 for "sfr_adu").
 
     Returns:
         DealScore with full component breakdown and alert status.
@@ -161,12 +166,19 @@ def score_deal(
     if scraped_at is None:
         scraped_at = datetime.now(tz=timezone.utc)
 
-    return_s = compute_return_score(conservative_monthly_cash_flow, dscr, cash_on_cash)
-    risk_s   = compute_risk_score(
+    pt = (property_type or "").lower()
+    is_adu = pt == "sfr_adu"
+
+    return_s = compute_return_score(
+        conservative_monthly_cash_flow, dscr, cash_on_cash,
+        is_adu=is_adu,
+    )
+    risk_s = compute_risk_score(
         year_built, flood_high_risk, purchase_price,
         zip_median_price, all_month_to_month, no_inspection_contingency,
+        property_type=property_type,
     )
-    conf_s   = compute_confidence_score(
+    conf_s = compute_confidence_score(
         raw_confidence, scraped_at, comps_count,
         purchase_price, address, num_units,
         confidence_penalty=confidence_penalty,

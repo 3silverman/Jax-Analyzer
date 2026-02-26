@@ -3,9 +3,10 @@ neighborhood/crime_grade.py
 
 CrimeGrade.org crime grade lookup for a neighborhood.
 
-Strategy: scrape the CrimeGrade.org page for the given zip code.
-If scraping fails (bot detection, structural change), returns a mock/unknown
-grade with low_confidence=True so it never passes the B-or-above hard gate.
+Caching strategy (priority order):
+  1. In-memory process cache (lasts for the process lifetime; cleared between daily runs)
+  2. DB cache via crime_grade_repo (7-day TTL; checked via get_cached_crime_grade())
+  3. Live scrape from CrimeGrade.org (falls back to UNKNOWN/low_confidence on failure)
 
 Hard gate: property fails if crime grade is C, D, or F.
 Pass grades: A+, A, A-, B+, B, B-
@@ -14,6 +15,7 @@ Pass grades: A+, A, A-, B+, B, B-
 from __future__ import annotations
 
 import re
+import time
 from typing import TypedDict
 
 import httpx
@@ -33,19 +35,19 @@ _HEADERS = {
 # Grades that pass the hard gate (B or above)
 PASSING_GRADES: frozenset[str] = frozenset({"A+", "A", "A-", "B+", "B", "B-"})
 
+# Process-level in-memory cache: {zip_code: (result_dict, timestamp)}
+_mem_cache: dict[str, tuple[dict, float]] = {}
+_MEM_CACHE_TTL_SECONDS = 7 * 24 * 3600  # 7 days
+
 
 class CrimeGradeResult(TypedDict):
     grade:           str     # e.g. "B+", "C", "UNKNOWN"
     passes_gate:     bool    # True = B or above
-    low_confidence:  bool    # True = scraped data unreliable; never surfaces as high-priority
+    low_confidence:  bool    # True = scraped data unreliable
 
 
 def _letter_grade_from_html(html: str) -> str | None:
-    """
-    Attempt to extract a letter grade (A+, A, B-, C, etc.) from CrimeGrade HTML.
-    Returns None if no recognisable grade is found.
-    """
-    # CrimeGrade typically renders the grade in a large element with class "grade"
+    """Extract a letter grade from CrimeGrade HTML. Returns None if not found."""
     patterns = [
         r'class="[^"]*grade[^"]*"[^>]*>\s*([A-F][+-]?)\s*<',
         r'Overall Crime Grade.*?([A-F][+-]?)',
@@ -60,18 +62,35 @@ def _letter_grade_from_html(html: str) -> str | None:
     return None
 
 
-def get_crime_grade(zip_code: str) -> CrimeGradeResult:
-    """
-    Fetch the crime grade for a zip code from CrimeGrade.org.
+def _make_result(grade: str, low_confidence: bool = False) -> CrimeGradeResult:
+    passes = grade in PASSING_GRADES
+    return CrimeGradeResult(grade=grade, passes_gate=passes, low_confidence=low_confidence)
 
-    Args:
-        zip_code: Five-digit US zip code string.
 
-    Returns:
-        CrimeGradeResult with grade, passes_gate flag, and low_confidence flag.
-        On any scraping failure returns grade="UNKNOWN", passes_gate=False,
-        low_confidence=True so the property cannot pass the hard gate.
-    """
+def _unknown() -> CrimeGradeResult:
+    return CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
+
+
+def _check_mem_cache(zip_code: str) -> CrimeGradeResult | None:
+    entry = _mem_cache.get(zip_code)
+    if entry:
+        result, ts = entry
+        if time.monotonic() - ts < _MEM_CACHE_TTL_SECONDS:
+            return CrimeGradeResult(**result)
+    return None
+
+
+def _put_mem_cache(zip_code: str, result: CrimeGradeResult) -> None:
+    _mem_cache[zip_code] = (dict(result), time.monotonic())
+
+
+def clear_mem_cache() -> None:
+    """Clear the process-level cache (for tests and between daily runs)."""
+    _mem_cache.clear()
+
+
+def _scrape(zip_code: str) -> CrimeGradeResult:
+    """Live scrape from CrimeGrade.org. Returns UNKNOWN on any error."""
     url = f"{_BASE_URL}{zip_code}-fl/"
     try:
         logger.info("crime_grade_request", zip_code=zip_code)
@@ -80,14 +99,88 @@ def get_crime_grade(zip_code: str) -> CrimeGradeResult:
         html = response.text
     except Exception as exc:
         logger.warning("crime_grade_scrape_error", zip_code=zip_code, error=str(exc))
-        return CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
+        return _unknown()
 
     grade = _letter_grade_from_html(html)
     if grade is None:
         logger.warning("crime_grade_parse_failed", zip_code=zip_code)
-        return CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
+        return _unknown()
 
-    passes = grade in PASSING_GRADES
-    result = CrimeGradeResult(grade=grade, passes_gate=passes, low_confidence=False)
-    logger.info("crime_grade_result", zip_code=zip_code, grade=grade, passes=passes)
+    result = _make_result(grade)
+    logger.info("crime_grade_result", zip_code=zip_code, grade=grade, passes=result["passes_gate"])
     return result
+
+
+def get_crime_grade(zip_code: str) -> CrimeGradeResult:
+    """
+    Synchronous crime grade lookup with in-memory process cache.
+
+    Use get_cached_crime_grade() (async, DB-backed) from the pipeline for
+    full DB caching with 7-day TTL and manual overrides.
+
+    Args:
+        zip_code: Five-digit US zip code string.
+
+    Returns:
+        CrimeGradeResult. Returns UNKNOWN/low_confidence=True on any scraping failure.
+    """
+    cached = _check_mem_cache(zip_code)
+    if cached is not None:
+        return cached
+
+    result = _scrape(zip_code)
+    _put_mem_cache(zip_code, result)
+    return result
+
+
+async def get_cached_crime_grade(zip_code: str) -> CrimeGradeResult:
+    """
+    Async DB-backed crime grade lookup with 7-day TTL and manual override support.
+
+    Priority:
+      1. In-memory process cache
+      2. DB manual override (takes precedence, never expires)
+      3. DB scrape cache (7-day TTL)
+      4. Live scrape → stored in DB cache for next call
+
+    Gracefully falls back to synchronous get_crime_grade() if DB unavailable.
+    """
+    # 1. In-memory
+    cached = _check_mem_cache(zip_code)
+    if cached is not None:
+        return cached
+
+    # 2 & 3. DB lookup
+    try:
+        from db.connection import get_session
+        from db.repositories.crime_grade_repo import get_cached_grade, store_grade
+
+        async with get_session() as session:
+            db_result = await get_cached_grade(session, zip_code)
+
+        if db_result:
+            result = CrimeGradeResult(
+                grade=db_result["grade"],
+                passes_gate=db_result["passes_gate"],
+                low_confidence=db_result.get("low_confidence", False),
+            )
+            _put_mem_cache(zip_code, result)
+            return result
+
+        # 4. Live scrape → store in DB
+        result = _scrape(zip_code)
+        try:
+            async with get_session() as session:
+                await store_grade(
+                    session, zip_code,
+                    result["grade"], result["passes_gate"], result["low_confidence"]
+                )
+        except Exception as exc:
+            logger.warning("crime_grade_db_store_failed", zip_code=zip_code, error=str(exc))
+
+        _put_mem_cache(zip_code, result)
+        return result
+
+    except Exception as exc:
+        logger.warning("crime_grade_db_unavailable", zip_code=zip_code, error=str(exc))
+        return get_crime_grade(zip_code)

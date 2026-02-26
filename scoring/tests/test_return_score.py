@@ -58,6 +58,26 @@ class TestReturnScore:
         assert r.score == 40
         assert r.disqualified is False
 
+    def test_adu_bonus_adds_3_pts(self) -> None:
+        r_no_adu  = compute_return_score(1000, dscr=1.2, cash_on_cash=0.0, is_adu=False)
+        r_with_adu = compute_return_score(1000, dscr=1.2, cash_on_cash=0.0, is_adu=True)
+        assert r_with_adu.adu_bonus == 3
+        assert r_no_adu.adu_bonus == 0
+        assert r_with_adu.score == r_no_adu.score + 3
+
+    def test_adu_bonus_does_not_exceed_cap(self) -> None:
+        # Max base (40) + DSCR(5) + CoC(3) + ADU(3) would be 51 but cap is 40
+        r = compute_return_score(1500, dscr=1.5, cash_on_cash=0.10, is_adu=True)
+        assert r.score == 40
+
+    def test_adu_bonus_zero_when_not_adu(self) -> None:
+        r = compute_return_score(800, dscr=1.3, cash_on_cash=0.0, is_adu=False)
+        assert r.adu_bonus == 0
+
+    def test_adu_bonus_reason_mentioned(self) -> None:
+        r = compute_return_score(1000, dscr=1.2, cash_on_cash=0.0, is_adu=True)
+        assert "ADU" in r.reason
+
 
 class TestReturnScoreReason:
     def test_reason_contains_cash_flow(self) -> None:

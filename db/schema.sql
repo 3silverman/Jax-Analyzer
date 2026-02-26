@@ -113,7 +113,12 @@ CREATE TABLE IF NOT EXISTS neighborhood_scores (
 
     -- Gate result
     passed_gates        BOOLEAN     NOT NULL DEFAULT FALSE,
-    failed_gate_reasons TEXT[]      NOT NULL DEFAULT '{}'
+    failed_gate_reasons TEXT[]      NOT NULL DEFAULT '{}',
+
+    -- Links
+    street_view_url     TEXT,
+    satellite_url       TEXT,
+    maps_link           TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_neighborhood_property ON neighborhood_scores (property_id);
@@ -146,7 +151,10 @@ CREATE TABLE IF NOT EXISTS deal_scores (
     why_scored_high     TEXT,
 
     -- Snapshot of assumptions used for this score (for audit)
-    assumptions_snapshot JSONB      NOT NULL DEFAULT '{}'
+    assumptions_snapshot JSONB      NOT NULL DEFAULT '{}',
+
+    -- Full deal card (strategies, stress tests, VA loan snapshot)
+    deal_card_json      JSONB       NOT NULL DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_deal_scores_property   ON deal_scores (property_id);
@@ -160,7 +168,11 @@ CREATE TABLE IF NOT EXISTS outcomes (
     property_id         TEXT        NOT NULL REFERENCES properties (canonical_id) ON DELETE CASCADE,
     outcome             TEXT        NOT NULL CHECK (outcome IN ('pursued','rejected','offer_made','closed')),
     notes               TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    viewed_at           TIMESTAMPTZ,
+    offer_price         DOUBLE PRECISION,
+    under_contract      BOOLEAN     NOT NULL DEFAULT FALSE,
+    closed_price        DOUBLE PRECISION
 );
 
 CREATE INDEX IF NOT EXISTS idx_outcomes_property ON outcomes (property_id);
@@ -208,8 +220,32 @@ CREATE TABLE IF NOT EXISTS assumptions (
     rate_fetched_at     TIMESTAMPTZ,               -- UTC timestamp of last successful fetch
     rate_is_stale       BOOLEAN          NOT NULL DEFAULT FALSE,
     rate_source         TEXT             NOT NULL DEFAULT 'fallback'
-                        CHECK (rate_source IN ('fred', 'cache', 'fallback'))
+                        CHECK (rate_source IN ('fred', 'cache', 'fallback')),
+
+    -- Assumptions preset
+    active_preset       TEXT             NOT NULL DEFAULT 'custom'
+                        CHECK (active_preset IN ('conservative', 'base', 'optimistic', 'custom'))
 );
 
 -- Seed default row
 INSERT INTO assumptions (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+
+-- ── crime_grade_cache ─────────────────────────────────────────
+-- Zip-level cache scraped from CrimeGrade.org.  TTL = 7 days.
+CREATE TABLE IF NOT EXISTS crime_grade_cache (
+    zip_code        TEXT        PRIMARY KEY,
+    grade           TEXT        NOT NULL,
+    passes_gate     BOOLEAN     NOT NULL,
+    low_confidence  BOOLEAN     NOT NULL DEFAULT FALSE,
+    scraped_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Manual override — takes precedence over the scraped cache.
+CREATE TABLE IF NOT EXISTS crime_grade_overrides (
+    zip_code        TEXT        PRIMARY KEY,
+    grade           TEXT        NOT NULL,
+    passes_gate     BOOLEAN     NOT NULL,
+    set_by          TEXT        NOT NULL DEFAULT 'manual',
+    set_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

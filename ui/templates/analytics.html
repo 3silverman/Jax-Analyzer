@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Analytics{% endblock %}
+{% block content %}
+<h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Analytics</h2>
+
+{# ── Pipeline Summary ─────────────────────────────────────────────────────── #}
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px">
+  {% for label, key, color in [
+    ('Total Active',  'total_active',   '#1a2744'),
+    ('Passed Gates',  'passed_gates',   '#38a169'),
+    ('Score ≥ 60',    'scored_60_plus', '#3182ce'),
+    ('High Priority', 'high_priority',  '#e53e3e'),
+  ] %}
+  <div class="card" style="text-align:center;padding:16px">
+    <div style="font-size:32px;font-weight:800;color:{{ color }}">{{ analytics.get(key, 0) }}</div>
+    <div class="stat-label" style="margin-top:4px">{{ label }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{# ── Deal Funnel ──────────────────────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:24px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:16px;color:#1a2744">Deal Funnel</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px">
+    {% for label, key, color, bg in [
+      ('Pursued',        'pursued',        '#2b6cb0', '#bee3f8'),
+      ('Offer Made',     'offer_made',     '#276749', '#c6f6d5'),
+      ('Under Contract', 'under_contract', '#744210', '#fefcbf'),
+      ('Closed',         'closed',         '#22543d', '#9ae6b4'),
+      ('Rejected',       'rejected',       '#9b2c2c', '#fed7d7'),
+    ] %}
+    <div style="text-align:center;background:{{ bg }};border-radius:8px;padding:14px">
+      <div style="font-size:28px;font-weight:800;color:{{ color }}">{{ analytics.get(key, 0) }}</div>
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:{{ color }};margin-top:4px">
+        {{ label }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# Conversion rates #}
+  {% set pursued = analytics.get('pursued', 0) %}
+  {% set offer   = analytics.get('offer_made', 0) %}
+  {% set closed  = analytics.get('closed', 0) %}
+  {% if pursued > 0 %}
+  <div style="margin-top:16px">
+    <div style="font-size:11px;color:#718096;margin-bottom:6px;text-transform:uppercase;font-weight:600">
+      Conversion rates
+    </div>
+    <div style="display:flex;gap:8px;font-size:12px;color:#4a5568;flex-wrap:wrap">
+      <span>Pursued → Offer: <strong>
+        {{ "%.0f"|format(offer / pursued * 100) }}%
+      </strong></span>
+      <span style="color:#cbd5e0">&middot;</span>
+      <span>Offer → Closed: <strong>
+        {% if offer > 0 %}{{ "%.0f"|format(closed / offer * 100) }}%{% else %}—{% endif %}
+      </strong></span>
+      <span style="color:#cbd5e0">&middot;</span>
+      <span>Pursued → Closed: <strong>
+        {{ "%.0f"|format(closed / pursued * 100) }}%
+      </strong></span>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Price Analytics ──────────────────────────────────────────────────────── #}
+{% if analytics.get('avg_offer_price') or analytics.get('avg_closed_price') %}
+<div class="card" style="margin-bottom:24px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:16px;color:#1a2744">Price Analytics</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+    {% if analytics.get('avg_offer_price') %}
+    <div>
+      <div class="stat-label">Average Offer Price</div>
+      <div class="stat-value">${{ "{:,.0f}".format(analytics.avg_offer_price) }}</div>
+    </div>
+    {% endif %}
+    {% if analytics.get('avg_closed_price') %}
+    <div>
+      <div class="stat-label">Average Closed Price</div>
+      <div class="stat-value">${{ "{:,.0f}".format(analytics.avg_closed_price) }}</div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# ── Score Distribution ───────────────────────────────────────────────────── #}
+<div class="card">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:16px;color:#1a2744">Score Distribution</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px">
+    {% set score_85 = analytics.get('score_85_plus',  0) %}
+    {% set score_60 = analytics.get('scored_60_plus', 0) - score_85 %}
+    {% set score_40 = analytics.get('score_40_to_59', 0) %}
+    {% set score_lo = analytics.get('score_under_40', 0) %}
+    {% for label, count, color in [
+      ('85+ (Alert)',   score_85, '#e53e3e'),
+      ('60–84 (Good)',  score_60, '#38a169'),
+      ('40–59 (OK)',    score_40, '#d69e2e'),
+      ('<40 (Weak)',    score_lo, '#718096'),
+    ] %}
+    <div style="text-align:center;padding:12px;background:#f7fafc;border-radius:6px">
+      <div style="font-size:24px;font-weight:800;color:{{ color }}">{{ [count, 0]|max }}</div>
+      <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:{{ color }};margin-top:4px">
+        {{ label }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% endblock %}

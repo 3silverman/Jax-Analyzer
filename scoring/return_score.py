@@ -3,7 +3,7 @@ scoring/return_score.py
 
 Return Score (0–40) component of the Deal Score.
 
-Inputs: conservative cash flow, DSCR, cash-on-cash return.
+Inputs: conservative cash flow, DSCR, cash-on-cash return, and is_adu flag.
 All scores are based on the CONSERVATIVE CASE only (worst stress test).
 
 Scoring table:
@@ -18,6 +18,7 @@ Scoring table:
   DSCR < 1.2 → disqualified (score = 0)
 
   CoC ≥ 8%   → +3 pts
+  ADU bonus  → +3 pts (SFR with ADU house-hack; ADU provides income diversification)
 
 Maximum: 40 pts (capped).
 """
@@ -33,6 +34,7 @@ class ReturnScore:
     base_pts:     int      # cash-flow component
     dscr_pts:     int      # DSCR bonus
     coc_pts:      int      # CoC bonus
+    adu_bonus:    int      # +3 pts for SFR_ADU house-hack strategy
     disqualified: bool     # True if DSCR < 1.2 or cash_flow < $500
     reason:       str      # plain-English explanation
 
@@ -41,6 +43,7 @@ def compute_return_score(
     conservative_monthly_cash_flow: float,
     dscr: float,
     cash_on_cash: float,
+    is_adu: bool = False,
 ) -> ReturnScore:
     """
     Compute the Return Score (0–40).
@@ -49,6 +52,8 @@ def compute_return_score(
         conservative_monthly_cash_flow: Best strategy worst-case monthly cash flow ($).
         dscr:         Debt Service Coverage Ratio (NOI / annual debt service).
         cash_on_cash: Annual cash-on-cash return as a decimal (e.g. 0.08 = 8%).
+        is_adu:       True for SFR_ADU properties (house-hack with ADU income).
+                      Grants +3 points for income diversification vs single-unit SFH.
 
     Returns:
         ReturnScore dataclass.
@@ -58,7 +63,7 @@ def compute_return_score(
     # ── DSCR disqualifier ────────────────────────────────────────────────────
     if dscr < 1.2:
         return ReturnScore(
-            score=0, base_pts=0, dscr_pts=0, coc_pts=0,
+            score=0, base_pts=0, dscr_pts=0, coc_pts=0, adu_bonus=0,
             disqualified=True,
             reason=f"DSCR {dscr:.2f} is below the 1.2 minimum — deal disqualified.",
         )
@@ -74,33 +79,35 @@ def compute_return_score(
         base_pts = 18
     else:
         return ReturnScore(
-            score=0, base_pts=0, dscr_pts=0, coc_pts=0,
+            score=0, base_pts=0, dscr_pts=0, coc_pts=0, adu_bonus=0,
             disqualified=True,
             reason=f"Conservative cash flow ${cf:,.0f}/mo is below the $500 minimum.",
         )
 
     # ── DSCR bonus ────────────────────────────────────────────────────────────
-    if dscr >= 1.4:
-        dscr_pts = 5
-    else:
-        dscr_pts = 2  # already confirmed ≥ 1.2
+    dscr_pts = 5 if dscr >= 1.4 else 2   # already confirmed ≥ 1.2
 
     # ── CoC bonus ─────────────────────────────────────────────────────────────
     coc_pts = 3 if cash_on_cash >= 0.08 else 0
 
-    raw   = base_pts + dscr_pts + coc_pts
-    score = min(40, raw)
+    # ── ADU bonus ─────────────────────────────────────────────────────────────
+    adu_bonus = 3 if is_adu else 0
+
+    score = min(40, base_pts + dscr_pts + coc_pts + adu_bonus)
 
     parts = [f"${cf:,.0f}/mo cash flow ({base_pts} pts)"]
     parts.append(f"DSCR {dscr:.2f} (+{dscr_pts} pts)")
     if coc_pts:
         parts.append(f"CoC {cash_on_cash:.1%} (+{coc_pts} pts)")
+    if adu_bonus:
+        parts.append("ADU income diversification (+3 pts)")
 
     return ReturnScore(
         score        = score,
         base_pts     = base_pts,
         dscr_pts     = dscr_pts,
         coc_pts      = coc_pts,
+        adu_bonus    = adu_bonus,
         disqualified = False,
         reason       = "Return Score: " + ", ".join(parts) + f" = {score}/40.",
     )

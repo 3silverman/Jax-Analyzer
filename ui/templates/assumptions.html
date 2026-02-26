@@ -8,6 +8,35 @@
   All rates are percentages (e.g. enter 7.5 for 7.5%).
 </p>
 
+{# ── Preset Buttons ────────────────────────────────────────────────── #}
+{% set active_preset = assumptions.get('active_preset', 'custom') %}
+<div class="card" style="margin-bottom:16px">
+  <h3 style="font-size:13px;font-weight:700;margin-bottom:10px;color:#1a2744">Quick Presets</h3>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    {% for preset_name, label, desc in [
+        ('conservative', 'Conservative', 'Higher vacancy, rate, reserves — stress-test mode'),
+        ('base',         'Base',         'Balanced market assumptions'),
+        ('optimistic',   'Optimistic',   'Tighter vacancy, lower insurance'),
+    ] %}
+    <form action="/assumptions/preset/{{ preset_name }}" method="post" style="margin:0">
+      <button type="submit" class="btn {{ 'btn-primary' if active_preset == preset_name else 'btn-outline' }}"
+              style="font-size:13px;padding:6px 14px" title="{{ desc }}">
+        {{ label }}
+        {% if active_preset == preset_name %}
+        <span style="font-size:10px;margin-left:4px;opacity:0.8">✓ active</span>
+        {% endif %}
+      </button>
+    </form>
+    {% endfor %}
+    {% if active_preset not in ('conservative', 'base', 'optimistic') %}
+    <span class="badge badge-preset" style="align-self:center">Custom Settings Active</span>
+    {% endif %}
+  </div>
+  <p style="font-size:11px;color:#718096;margin-top:8px">
+    Selecting a preset overwrites all rate fields below. Save &amp; Recalculate to apply manual overrides.
+  </p>
+</div>
+
 {# ── Live VA Rate Banner ───────────────────────────────────────────── #}
 <div class="card" style="margin-bottom:16px;border-left:4px solid {% if va_rate.is_stale %}#e53e3e{% elif va_rate.is_fallback %}#dd6b20{% else %}#38a169{% endif %}">
   <div style="display:flex;align-items:center;gap:12px">
@@ -80,7 +109,7 @@
   <input type="number" name="maintenance_rate" value="{{ assumptions.maintenance_rate }}" step="0.1" min="0" max="5">
 </div>
 
-<div style="margin-top:20px;display:flex;gap:12px">
+<div style="margin-top:20px;display:flex;gap:12px;flex-wrap:wrap">
   <button type="submit" class="btn btn-primary">Save &amp; Recalculate</button>
   <a href="/assumptions" class="btn btn-outline">Reset</a>
 </div>

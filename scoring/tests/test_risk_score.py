@@ -72,3 +72,25 @@ class TestRiskScore:
         r = compute_risk_score(year_built=1935, flood_high_risk=False, purchase_price=300_000)
         assert len(r.risk_flags) >= 1
         assert any("1935" in f for f in r.risk_flags)
+
+    def test_sfr_property_type_deducts_2(self) -> None:
+        r_mf  = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000)
+        r_sfr = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000,
+                                   property_type="sfr")
+        assert r_sfr.score == r_mf.score - 2
+
+    def test_sfr_adu_exempt_from_sfr_penalty(self) -> None:
+        r_mf      = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000)
+        r_sfr_adu = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000,
+                                       property_type="sfr_adu")
+        assert r_sfr_adu.score == r_mf.score  # no single-unit vacancy deduction
+
+    def test_sfr_risk_flag_mentions_vacancy(self) -> None:
+        r = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000,
+                               property_type="sfr")
+        assert any("vacancy" in f.lower() or "single" in f.lower() for f in r.risk_flags)
+
+    def test_none_property_type_no_sfr_penalty(self) -> None:
+        r = compute_risk_score(year_built=2010, flood_high_risk=False, purchase_price=300_000,
+                               property_type=None)
+        assert r.score == 30

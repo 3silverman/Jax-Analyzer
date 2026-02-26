@@ -6,6 +6,46 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# ── Built-in presets ─────────────────────────────────────────────────────────
+
+_PRESETS: dict[str, dict[str, Any]] = {
+    "conservative": {
+        "interest_rate":    0.085,
+        "insurance_pct":    0.006,
+        "ltr_vacancy":      0.10,
+        "mtr_vacancy":      0.12,
+        "str_vacancy":      0.30,
+        "mgmt_rate":        0.10,
+        "capex_rate":       0.008,
+        "maintenance_rate": 0.015,
+    },
+    "base": {
+        "interest_rate":    0.075,
+        "insurance_pct":    0.005,
+        "ltr_vacancy":      0.08,
+        "mtr_vacancy":      0.10,
+        "str_vacancy":      0.25,
+        "mgmt_rate":        0.08,
+        "capex_rate":       0.005,
+        "maintenance_rate": 0.010,
+    },
+    "optimistic": {
+        "interest_rate":    0.065,
+        "insurance_pct":    0.004,
+        "ltr_vacancy":      0.05,
+        "mtr_vacancy":      0.07,
+        "str_vacancy":      0.18,
+        "mgmt_rate":        0.07,
+        "capex_rate":       0.003,
+        "maintenance_rate": 0.007,
+    },
+}
+
+
+def get_preset_values(preset_name: str) -> dict[str, Any] | None:
+    """Return the rate values for a named preset, or None if custom/unknown."""
+    return _PRESETS.get(preset_name)
+
 
 async def get_assumptions(session: AsyncSession) -> dict[str, Any]:
     result = await session.execute(text("SELECT * FROM assumptions WHERE id = 1"))
@@ -20,6 +60,7 @@ async def update_assumptions(session: AsyncSession, updates: dict[str, Any]) -> 
         "va_funding_fee_pct", "loan_term_years", "closing_costs_pct",
         "alert_threshold", "min_cash_flow", "min_dscr",
         "current_va_rate", "rate_fetched_at", "rate_is_stale", "rate_source",
+        "active_preset",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
@@ -29,6 +70,15 @@ async def update_assumptions(session: AsyncSession, updates: dict[str, Any]) -> 
         text(f"UPDATE assumptions SET {set_clause}, updated_at = NOW() WHERE id = 1"),
         filtered,
     )
+
+
+async def apply_preset(session: AsyncSession, preset_name: str) -> None:
+    """Apply a named preset's rate values and record which preset is active."""
+    values = get_preset_values(preset_name)
+    if values is None:
+        return
+    updates = {**values, "active_preset": preset_name}
+    await update_assumptions(session, updates)
 
 
 async def update_va_rate(
@@ -73,4 +123,5 @@ def _defaults() -> dict[str, Any]:
         "rate_fetched_at":  None,
         "rate_is_stale":    False,
         "rate_source":      "fallback",
+        "active_preset":    "custom",
     }

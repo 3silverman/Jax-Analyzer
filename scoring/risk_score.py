@@ -7,12 +7,13 @@ Starts at 30 and deducts points for risk factors.
 Floor is 0.
 
 Deduction table:
-  Year built < 1950           → -5 pts
-  Year built 1950–1979        → -3 pts
-  Flood zone AE/VE            → -10 pts
-  VA appraisal gap risk       → -5 pts  (price > 15% above zip median)
-  All tenants month-to-month  → -2 pts
-  No inspection contingency   → -3 pts
+  Year built < 1950             → -5 pts
+  Year built 1950–1979          → -3 pts
+  Flood zone AE/VE              → -10 pts
+  VA appraisal gap risk         → -5 pts  (price > 15% above zip median)
+  All tenants month-to-month    → -2 pts
+  No inspection contingency     → -3 pts
+  SFH single-unit vacancy risk  → -2 pts  (SFR only; SFR_ADU is exempt)
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ def compute_risk_score(
     zip_median_price: float | None = None,
     all_month_to_month: bool = False,
     no_inspection_contingency: bool = False,
+    property_type: str | None = None,
 ) -> RiskScore:
     """
     Compute the Risk Score (0–30).
@@ -47,6 +49,9 @@ def compute_risk_score(
                                    gap check is skipped.
         all_month_to_month:        True if all existing tenants are month-to-month.
         no_inspection_contingency: True if buyer is waiving inspection.
+        property_type:             PropertyType string value (e.g. "sfr", "sfr_adu",
+                                   "duplex"). SFR gets an extra -2 for single-unit
+                                   vacancy risk. SFR_ADU is exempt (ADU provides income).
 
     Returns:
         RiskScore dataclass.
@@ -78,6 +83,12 @@ def compute_risk_score(
                 f"Purchase price is {pct:.0f}% above zip median — "
                 "VA appraisal may come in low, requiring price renegotiation"
             )
+
+    # ── SFH single-unit vacancy risk ──────────────────────────────────────────
+    pt = (property_type or "").lower()
+    if pt == "sfr":
+        deductions.append(("Single-family — 100% vacancy on tenant turnover", 2))
+        flags.append("Single-family home: full income loss during vacancy periods")
 
     # ── Tenant situation ──────────────────────────────────────────────────────
     if all_month_to_month:

@@ -9,18 +9,19 @@ and returns a list of deal dicts ready for the UI / DB.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
 
 from ingestion.run_scan import ScanResult
 from ingestion.va_rates import fetch_va_rate
-from neighborhood.crime_grade import get_crime_grade
+from neighborhood.crime_grade import get_crime_grade, get_cached_crime_grade
 from neighborhood.flood_zone import get_flood_zone
 from neighborhood.gates import evaluate_gates
 from neighborhood.hospital_proximity import get_hospital_proximity
 from neighborhood.liveability import compute_liveability
-from neighborhood.street_view import get_street_view_urls
+from neighborhood.street_view import get_street_view_urls, score_street_view
 from neighborhood.walk_score import get_walk_score
 from normalization.schema import PropertyRecord, RentalComp
 from scoring.deal_scorer import score_deal
@@ -29,16 +30,17 @@ from underwriting.calculator import underwrite, Scenario
 
 logger = structlog.get_logger(__name__)
 
+# Score threshold below which we skip the Anthropic visual scoring API call
+_VISUAL_SCORE_MIN_DEAL_SCORE = 50
+
 
 # ── Comp lookup helpers ────────────────────────────────────────────────────────
 
 def _ltr_comps_for(record: PropertyRecord, ltr_comps: list[RentalComp]) -> list[RentalComp]:
-    """Return LTR comps in the same zip code."""
     return [c for c in ltr_comps if c.zip_code == record.zip_code]
 
 
 def _mtr_comps_for(record: PropertyRecord, mtr_comps: list[RentalComp]) -> list[RentalComp]:
-    """Return MTR comps in the same zip code."""
     return [c for c in mtr_comps if c.zip_code == record.zip_code]
 
 
@@ -46,8 +48,7 @@ def _median_rate(comps: list[RentalComp]) -> float | None:
     rates = sorted(c.monthly_rate for c in comps if c.monthly_rate and c.monthly_rate > 0)
     if not rates:
         return None
-    mid = len(rates) // 2
-    return rates[mid]
+    return rates[len(rates) // 2]
 
 
 # ── Rentcast fallback ──────────────────────────────────────────────────────────
@@ -56,21 +57,12 @@ def _try_rentcast_rates(
     record: PropertyRecord,
     assumptions: dict,
 ) -> tuple[float | None, float | None]:
-    """
-    Attempt to fetch zip-level rent estimates from Rentcast as a fallback
-    when no live comps are available.
-
-    Returns:
-        (ltr_rate_total, mtr_rate_total) or (None, None) on failure.
-        Rates are total for all units combined.
-    """
     try:
-        import os
-        from ingestion.rentcast_client import RentcastClient, RentcastError
-
         api_key = os.environ.get("RENTCAST_API_KEY", "")
         if not api_key:
             return None, None
+
+        from ingestion.rentcast_client import RentcastClient, RentcastError
 
         client = RentcastClient(api_key=api_key)
         num_units = record.num_units or 1
@@ -95,12 +87,69 @@ def _try_rentcast_rates(
         return None, None
 
 
+# ── AirDNA STR validation ──────────────────────────────────────────────────────
+
+def _try_airdna_str(record: PropertyRecord) -> tuple[float | None, bool]:
+    """
+    Attempt to get an STR revenue estimate from AirDNA.
+
+    Returns:
+        (monthly_revenue_total, strategy_validated)
+        strategy_validated=True only when AirDNA data is available.
+    """
+    try:
+        from ingestion.airdna_client import get_multi_unit_str_estimate
+
+        if not record.lat or not record.lon:
+            return None, False
+
+        num_units   = record.num_units or 1
+        beds        = record.beds or 0
+        beds_per_unit = max(1, round(beds / num_units))
+
+        est = get_multi_unit_str_estimate(
+            lat=record.lat,
+            lon=record.lon,
+            num_units=num_units,
+            beds_per_unit=beds_per_unit,
+        )
+        if est:
+            logger.info("airdna_str_validated",
+                        address=record.address, monthly=est.monthly_revenue)
+            return est.monthly_revenue, True
+
+    except Exception as exc:
+        logger.warning("airdna_str_error", address=record.address, error=str(exc))
+
+    return None, False
+
+
+# ── Redfin sold comps ──────────────────────────────────────────────────────────
+
+def _try_redfin_zip_median(zip_code: str) -> float | None:
+    """Fetch zip-level sold price median from Redfin via Apify. Returns None on failure."""
+    try:
+        from ingestion.redfin_sold import get_zip_median_sold_price
+        result = get_zip_median_sold_price(zip_code)
+        if result.median_sold_price:
+            logger.info("redfin_zip_median",
+                        zip_code=zip_code, median=result.median_sold_price,
+                        comps_count=result.comps_count)
+        return result.median_sold_price
+    except Exception as exc:
+        logger.warning("redfin_zip_median_error", zip_code=zip_code, error=str(exc))
+        return None
+
+
 # ── Neighborhood enrichment ────────────────────────────────────────────────────
 
-def _enrich_neighborhood(record: PropertyRecord, walkscore_key: str = "", maps_key: str = "") -> dict:
+async def _enrich_neighborhood_async(
+    record: PropertyRecord,
+    walkscore_key: str = "",
+    maps_key: str = "",
+) -> dict:
     """
-    Run all neighborhood APIs for a single property.
-    Catches all errors gracefully — missing data degrades confidence, not pipeline.
+    Async neighborhood enrichment: crime grade uses DB-backed cache when available.
     """
     lat  = record.lat  or 30.32
     lon  = record.lon  or -81.66
@@ -113,7 +162,6 @@ def _enrich_neighborhood(record: PropertyRecord, walkscore_key: str = "", maps_k
             ws_result = get_walk_score(addr, lat, lon, api_key=walkscore_key)
     except Exception as e:
         logger.warning("walk_score_error", address=addr, error=str(e))
-
     walk_score = ws_result["walk_score"] if ws_result else None
 
     # Flood zone
@@ -122,11 +170,12 @@ def _enrich_neighborhood(record: PropertyRecord, walkscore_key: str = "", maps_k
     except Exception as e:
         logger.warning("flood_zone_error", address=addr, error=str(e))
         from neighborhood.flood_zone import FloodZoneResult
-        flood = FloodZoneResult(flood_zone="UNKNOWN", is_high_risk=False, sfha=False, panel_number="")
+        flood = FloodZoneResult(flood_zone="UNKNOWN", is_high_risk=False,
+                                sfha=False, panel_number="")
 
-    # Crime grade
+    # Crime grade — uses DB-backed async cache
     try:
-        crime = get_crime_grade(record.zip_code)
+        crime = await get_cached_crime_grade(record.zip_code)
     except Exception as e:
         logger.warning("crime_grade_error", zip_code=record.zip_code, error=str(e))
         from neighborhood.crime_grade import CrimeGradeResult
@@ -135,64 +184,136 @@ def _enrich_neighborhood(record: PropertyRecord, walkscore_key: str = "", maps_k
     # Hospital proximity
     hospital = get_hospital_proximity(lat, lon)
 
-    # Liveability
+    # Liveability (visual_score filled in later if deal_score >= threshold)
     liveability = compute_liveability(walk_score, hospital, crime["grade"], flood)
 
-    # Street View URLs (no live call — just URL generation)
+    # Street View URLs
     sv_urls = get_street_view_urls(lat, lon, addr, api_key=maps_key)
 
     # Gate evaluation
     gate_result = evaluate_gates(record, crime, flood)
 
     return {
-        "walk_score":       walk_score,
-        "flood_zone":       flood["flood_zone"],
-        "flood_high_risk":  flood["is_high_risk"],
-        "crime_grade":      crime["grade"],
+        "walk_score":           walk_score,
+        "flood_zone":           flood["flood_zone"],
+        "flood_high_risk":      flood["is_high_risk"],
+        "crime_grade":          crime["grade"],
         "crime_low_confidence": crime["low_confidence"],
-        "hospital_dist_miles": hospital["distance_miles"],
-        "closest_hospital": hospital["closest_hospital"],
-        "proximity_score":  hospital["proximity_score"],
-        "liveability_score": liveability["total"],
-        "street_view_url":  sv_urls["street_view_image_url"],
-        "satellite_url":    sv_urls["satellite_view_url"],
-        "maps_link":        sv_urls["google_maps_link"],
-        "passed_gates":     gate_result.passed,
-        "failed_gates":     gate_result.failed_gates,
-        "liveability":      liveability,
+        "hospital_dist_miles":  hospital["distance_miles"],
+        "closest_hospital":     hospital["closest_hospital"],
+        "proximity_score":      hospital["proximity_score"],
+        "liveability_score":    liveability["total"],
+        "street_view_url":      sv_urls["street_view_image_url"],
+        "satellite_url":        sv_urls["satellite_view_url"],
+        "maps_link":            sv_urls["google_maps_link"],
+        "passed_gates":         gate_result.passed,
+        "failed_gates":         gate_result.failed_gates,
+        "liveability":          liveability,
+    }
+
+
+def _enrich_neighborhood(
+    record: PropertyRecord,
+    walkscore_key: str = "",
+    maps_key: str = "",
+) -> dict:
+    """Synchronous wrapper for backward compatibility (used in existing pipeline)."""
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # We're inside an async context (e.g., APScheduler async job) — create task
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(
+                    asyncio.run,
+                    _enrich_neighborhood_async(record, walkscore_key, maps_key)
+                )
+                return future.result(timeout=60)
+        else:
+            return loop.run_until_complete(
+                _enrich_neighborhood_async(record, walkscore_key, maps_key)
+            )
+    except Exception:
+        # Fallback to synchronous crime grade if async fails
+        return _enrich_neighborhood_sync(record, walkscore_key, maps_key)
+
+
+def _enrich_neighborhood_sync(
+    record: PropertyRecord,
+    walkscore_key: str = "",
+    maps_key: str = "",
+) -> dict:
+    """Pure synchronous neighborhood enrichment (no DB caching for crime grade)."""
+    lat  = record.lat  or 30.32
+    lon  = record.lon  or -81.66
+    addr = record.address
+
+    ws_result = None
+    try:
+        if walkscore_key:
+            ws_result = get_walk_score(addr, lat, lon, api_key=walkscore_key)
+    except Exception as e:
+        logger.warning("walk_score_error", address=addr, error=str(e))
+    walk_score = ws_result["walk_score"] if ws_result else None
+
+    try:
+        flood = get_flood_zone(lat, lon)
+    except Exception as e:
+        logger.warning("flood_zone_error", address=addr, error=str(e))
+        from neighborhood.flood_zone import FloodZoneResult
+        flood = FloodZoneResult(flood_zone="UNKNOWN", is_high_risk=False,
+                                sfha=False, panel_number="")
+
+    try:
+        crime = get_crime_grade(record.zip_code)
+    except Exception as e:
+        logger.warning("crime_grade_error", zip_code=record.zip_code, error=str(e))
+        from neighborhood.crime_grade import CrimeGradeResult
+        crime = CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
+
+    hospital = get_hospital_proximity(lat, lon)
+    liveability = compute_liveability(walk_score, hospital, crime["grade"], flood)
+    sv_urls = get_street_view_urls(lat, lon, addr, api_key=maps_key)
+    gate_result = evaluate_gates(record, crime, flood)
+
+    return {
+        "walk_score":           walk_score,
+        "flood_zone":           flood["flood_zone"],
+        "flood_high_risk":      flood["is_high_risk"],
+        "crime_grade":          crime["grade"],
+        "crime_low_confidence": crime["low_confidence"],
+        "hospital_dist_miles":  hospital["distance_miles"],
+        "closest_hospital":     hospital["closest_hospital"],
+        "proximity_score":      hospital["proximity_score"],
+        "liveability_score":    liveability["total"],
+        "street_view_url":      sv_urls["street_view_image_url"],
+        "satellite_url":        sv_urls["satellite_view_url"],
+        "maps_link":            sv_urls["google_maps_link"],
+        "passed_gates":         gate_result.passed,
+        "failed_gates":         gate_result.failed_gates,
+        "liveability":          liveability,
     }
 
 
 # ── Underwriting helper ────────────────────────────────────────────────────────
 
-def _build_prop_dict(
-    record: PropertyRecord,
-    assumptions: dict,
-) -> dict[str, Any]:
-    """
-    Build the base underwriting input dict from a PropertyRecord.
-
-    Note: monthly_rent and mtr_monthly_rate are NOT injected here;
-    they are resolved inside underwrite() from the comps parameter.
-    zip_code and beds are included so the comp-selector inside underwrite()
-    can filter by zip and match by bed count.
-    """
+def _build_prop_dict(record: PropertyRecord, assumptions: dict) -> dict[str, Any]:
     num_units = record.num_units or 1
-
     return {
-        "purchase_price":    record.price,
-        "num_units":         num_units,
-        "zip_code":          record.zip_code,
-        "beds":              record.beds or 0,
-        "interest_rate":     assumptions.get("interest_rate", 0.075),
-        "insurance_annual":  record.price * assumptions.get("insurance_pct", 0.005),
-        "ltr_vacancy_rate":  assumptions.get("ltr_vacancy", 0.08),
-        "mtr_vacancy_rate":  assumptions.get("mtr_vacancy", 0.10),
-        "str_vacancy_rate":  assumptions.get("str_vacancy", 0.25),
-        "ltr_mgmt_rate":     assumptions.get("mgmt_rate", 0.08),
+        "purchase_price":       record.price,
+        "num_units":            num_units,
+        "zip_code":             record.zip_code,
+        "beds":                 record.beds or 0,
+        "interest_rate":        assumptions.get("interest_rate", 0.075),
+        "insurance_annual":     record.price * assumptions.get("insurance_pct", 0.005),
+        "ltr_vacancy_rate":     assumptions.get("ltr_vacancy", 0.08),
+        "mtr_vacancy_rate":     assumptions.get("mtr_vacancy", 0.10),
+        "str_vacancy_rate":     assumptions.get("str_vacancy", 0.25),
+        "ltr_mgmt_rate":        assumptions.get("mgmt_rate", 0.08),
         "ltr_maintenance_rate": assumptions.get("maintenance_rate", 0.01),
-        "ltr_capex_rate":    assumptions.get("capex_rate", 0.005),
-        "va_funding_fee_pct": assumptions.get("va_funding_fee_pct", 0.0215),
+        "ltr_capex_rate":       assumptions.get("capex_rate", 0.005),
+        "va_funding_fee_pct":   assumptions.get("va_funding_fee_pct", 0.0215),
     }
 
 
@@ -204,13 +325,13 @@ def _build_deal_card(
     uw_result,
     deal_score,
     comps_count: int,
+    zip_median_sold: float | None = None,
+    airdna_monthly: float | None = None,
 ) -> dict[str, Any]:
-    """Assemble the full deal card dict for the UI and DB."""
     base_ltr = uw_result.ltr.base
     base_mtr = uw_result.mtr.base
     base_str = uw_result.str_.base
 
-    # Conservative = worst stress case across all strategies
     worst_ltr = uw_result.ltr.worst_case_cash_flow
     worst_mtr = uw_result.mtr.worst_case_cash_flow
     worst_str = uw_result.str_.worst_case_cash_flow
@@ -222,8 +343,6 @@ def _build_deal_card(
     ]
     strategies_ranked = sorted(strategies_raw, key=lambda s: s["cash_flow"], reverse=True)
 
-    # Stress tests (use best strategy)
-    best_uw = uw_result.best_strategy()
     stress_tests = []
     for sc in list(Scenario):
         if sc.value == "base":
@@ -231,14 +350,22 @@ def _build_deal_card(
         res = uw_result.ltr.scenarios.get(sc) or uw_result.mtr.scenarios.get(sc)
         if res:
             stress_tests.append({
-                "label":      res.scenario_label,
-                "cash_flow":  res.monthly_cash_flow,
-                "dscr":       res.dscr,
+                "label":     res.scenario_label,
+                "cash_flow": res.monthly_cash_flow,
+                "dscr":      res.dscr,
             })
 
-    # Refi at 5.5%
     from underwriting.calculator import _monthly_payment
     refi_pmt = _monthly_payment(uw_result.loan_amount, 0.055, 30)
+
+    # Appraisal gap risk
+    appraisal_gap_risk = False
+    appraisal_gap_pct  = None
+    if zip_median_sold:
+        from ingestion.redfin_sold import compute_appraisal_gap
+        appraisal_gap_risk, appraisal_gap_pct = compute_appraisal_gap(
+            record.price, zip_median_sold
+        )
 
     return {
         "canonical_id":       record.canonical_id,
@@ -254,6 +381,8 @@ def _build_deal_card(
         "sqft":               record.sqft,
         "year_built":         record.year_built,
         "days_on_market":     record.days_on_market,
+        "lat":                record.lat,
+        "lon":                record.lon,
 
         # Neighborhood
         **neighborhood,
@@ -274,16 +403,22 @@ def _build_deal_card(
 
         # Comp sourcing
         "rent_source":        uw_result.rent_source.value,
+        "airdna_monthly":     airdna_monthly,
+
+        # Appraisal gap
+        "appraisal_gap_risk": appraisal_gap_risk,
+        "appraisal_gap_pct":  appraisal_gap_pct,
+        "zip_median_sold":    zip_median_sold,
 
         # Scoring
-        "deal_score":         deal_score.deal_score,
-        "return_score":       deal_score.return_score.score,
-        "risk_score":         deal_score.risk_score.score,
+        "deal_score":           deal_score.deal_score,
+        "return_score":         deal_score.return_score.score,
+        "risk_score":           deal_score.risk_score.score,
         "confidence_score_pts": deal_score.confidence_score.score,
-        "is_high_priority":   deal_score.is_high_priority,
-        "why_scored_high":    deal_score.why_scored_high,
-        "risk_flags":         deal_score.risk_score.risk_flags,
-        "comps_count":        comps_count,
+        "is_high_priority":     deal_score.is_high_priority,
+        "why_scored_high":      deal_score.why_scored_high,
+        "risk_flags":           deal_score.risk_score.risk_flags,
+        "comps_count":          comps_count,
     }
 
 
@@ -306,21 +441,21 @@ def run_pipeline(
     if assumptions is None:
         assumptions = {}
 
-    # ── Fetch live VA rate once for the whole pipeline run ─────────────────────
+    # ── Live VA rate ───────────────────────────────────────────────────────────
     va_rate_result = fetch_va_rate()
     if "interest_rate" not in assumptions:
         assumptions = {**assumptions, "interest_rate": va_rate_result.rate}
     if va_rate_result.is_stale:
-        logger.warning(
-            "va_rate_stale",
-            rate_pct=f"{va_rate_result.rate:.3%}",
-            fetched_at=va_rate_result.fetched_at.isoformat(),
-        )
-    logger.info(
-        "va_rate_applied",
-        rate_pct=f"{va_rate_result.rate:.3%}",
-        source=va_rate_result.source,
-    )
+        logger.warning("va_rate_stale", rate_pct=f"{va_rate_result.rate:.3%}",
+                       fetched_at=va_rate_result.fetched_at.isoformat())
+    logger.info("va_rate_applied", rate_pct=f"{va_rate_result.rate:.3%}",
+                source=va_rate_result.source)
+
+    # ── Redfin zip median cache: fetch once per unique zip ─────────────────────
+    zip_medians: dict[str, float | None] = {}
+    for record in scan_result.listings:
+        if record.zip_code not in zip_medians:
+            zip_medians[record.zip_code] = _try_redfin_zip_median(record.zip_code)
 
     inbox_deals:    list[dict] = []
     rejected_props: list[dict] = []
@@ -332,35 +467,34 @@ def run_pipeline(
 
     for record in scan_result.listings:
         try:
-            # ── Neighborhood ──────────────────────────────────────────────
+            # ── Neighborhood ──────────────────────────────────────────────────
             neighborhood = _enrich_neighborhood(record, walkscore_key, maps_key)
 
             if not neighborhood["passed_gates"]:
                 rejected_props.append({
-                    "canonical_id": record.canonical_id,
-                    "address":      record.address,
-                    "zip_code":     record.zip_code,
-                    "price":        record.price,
+                    "canonical_id":  record.canonical_id,
+                    "address":       record.address,
+                    "zip_code":      record.zip_code,
+                    "price":         record.price,
                     "property_type": str(record.property_type),
-                    "num_units":    record.num_units,
-                    "crime_grade":  neighborhood["crime_grade"],
-                    "flood_zone":   neighborhood["flood_zone"],
+                    "num_units":     record.num_units,
+                    "crime_grade":   neighborhood["crime_grade"],
+                    "flood_zone":    neighborhood["flood_zone"],
                     "flood_high_risk": neighborhood["flood_high_risk"],
-                    "failed_gates": neighborhood["failed_gates"],
+                    "failed_gates":  neighborhood["failed_gates"],
                 })
                 failed_ids.add(record.canonical_id)
                 continue
 
-            # ── Comps ──────────────────────────────────────────────────────
-            ltr_comps = _ltr_comps_for(record, scan_result.ltr_comps)
-            mtr_comps = _mtr_comps_for(record, scan_result.mtr_comps)
-            all_comps = ltr_comps + mtr_comps
+            # ── Comps ──────────────────────────────────────────────────────────
+            ltr_comps   = _ltr_comps_for(record, scan_result.ltr_comps)
+            mtr_comps   = _mtr_comps_for(record, scan_result.mtr_comps)
+            all_comps   = ltr_comps + mtr_comps
             comps_count = len(ltr_comps) + len(mtr_comps)
 
-            # ── Underwriting ───────────────────────────────────────────────
+            # ── Underwriting ───────────────────────────────────────────────────
             prop_dict = _build_prop_dict(record, assumptions)
 
-            # If no live comps, try Rentcast as fallback before underwriting
             if not all_comps:
                 rentcast_ltr, rentcast_mtr = _try_rentcast_rates(record, assumptions)
                 if rentcast_ltr:
@@ -368,6 +502,11 @@ def run_pipeline(
                     logger.info("rentcast_fallback_used", address=record.address, ltr=rentcast_ltr)
                 if rentcast_mtr:
                     prop_dict["mtr_monthly_rate"] = rentcast_mtr
+
+            # AirDNA STR validation
+            airdna_monthly, str_validated = _try_airdna_str(record)
+            if airdna_monthly and airdna_monthly > 0:
+                prop_dict["str_monthly_revenue"] = airdna_monthly
 
             uw_result = underwrite(prop_dict, comps=all_comps if all_comps else None)
 
@@ -379,7 +518,10 @@ def run_pipeline(
             )
             best_base = uw_result.best_strategy(Scenario.BASE)
 
-            # ── Scoring ────────────────────────────────────────────────────
+            # Appraisal gap from Redfin zip median
+            zip_median = zip_medians.get(record.zip_code)
+
+            # ── Scoring ────────────────────────────────────────────────────────
             deal_score = score_deal(
                 conservative_monthly_cash_flow = cf,
                 dscr            = best_base.dscr,
@@ -392,12 +534,59 @@ def run_pipeline(
                 comps_count     = comps_count,
                 address         = record.address,
                 num_units       = record.num_units,
-                strategy_validated = comps_count >= 3,
+                strategy_validated = comps_count >= 3 or str_validated,
                 confidence_penalty = uw_result.confidence_penalty,
+                zip_median_price   = zip_median,
+                property_type      = record.property_type.value if hasattr(record.property_type, "value") else str(record.property_type),
             )
 
-            # ── Deal card ──────────────────────────────────────────────────
-            card = _build_deal_card(record, neighborhood, uw_result, deal_score, comps_count)
+            # ── Visual scoring (only for high-potential deals) ─────────────────
+            visual_score_val = 5  # default neutral
+            if (deal_score.deal_score >= _VISUAL_SCORE_MIN_DEAL_SCORE
+                    and neighborhood.get("street_view_url")):
+                try:
+                    vs = score_street_view(neighborhood["street_view_url"])
+                    if not vs["low_confidence"]:
+                        visual_score_val = vs["score"]
+                        neighborhood["visual_score"] = vs["score"]
+                        neighborhood["visual_breakdown"] = {
+                            k: vs[k] for k in
+                            ("property_cond", "street_clean", "neighbourhood", "safety", "rentability")
+                        }
+                except Exception as exc:
+                    logger.warning("visual_score_error", address=record.address, error=str(exc))
+
+            # Recompute liveability with real visual score if updated
+            if visual_score_val != 5:
+                from neighborhood.liveability import compute_liveability
+                from neighborhood.flood_zone import FloodZoneResult
+                flood_obj = FloodZoneResult(
+                    flood_zone=neighborhood["flood_zone"],
+                    is_high_risk=neighborhood["flood_high_risk"],
+                    sfha=neighborhood["flood_high_risk"],
+                    panel_number="",
+                )
+                hospital_obj = {
+                    "distance_miles":   neighborhood["hospital_dist_miles"],
+                    "closest_hospital": neighborhood["closest_hospital"],
+                    "proximity_score":  neighborhood["proximity_score"],
+                }
+                lv = compute_liveability(
+                    neighborhood.get("walk_score"),
+                    hospital_obj,
+                    neighborhood["crime_grade"],
+                    flood_obj,
+                    visual_score=visual_score_val,
+                )
+                neighborhood["liveability"] = lv
+                neighborhood["liveability_score"] = lv["total"]
+
+            # ── Deal card ──────────────────────────────────────────────────────
+            card = _build_deal_card(
+                record, neighborhood, uw_result, deal_score, comps_count,
+                zip_median_sold=zip_median,
+                airdna_monthly=airdna_monthly,
+            )
             scored_pairs.append((record, deal_score))
 
         except Exception as exc:
@@ -423,9 +612,16 @@ def run_pipeline(
                     if rentcast_mtr:
                         prop_dict["mtr_monthly_rate"] = rentcast_mtr
 
+                airdna_monthly, _ = _try_airdna_str(rec)
                 uw_result   = underwrite(prop_dict, comps=all_comps if all_comps else None)
                 neighborhood = _enrich_neighborhood(rec, walkscore_key, maps_key)
-                card = _build_deal_card(rec, neighborhood, uw_result, ds, len(ltr_comps) + len(mtr_comps))
+                zip_median  = zip_medians.get(rec.zip_code)
+                card = _build_deal_card(
+                    rec, neighborhood, uw_result, ds,
+                    len(ltr_comps) + len(mtr_comps),
+                    zip_median_sold=zip_median,
+                    airdna_monthly=airdna_monthly,
+                )
                 cards.append(card)
             except Exception:
                 pass

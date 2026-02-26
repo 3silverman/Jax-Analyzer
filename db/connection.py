@@ -24,16 +24,21 @@ _Session = None
 
 def _build_engine():
     global _engine, _Session
-    url = os.environ.get("SUPABASE_URL", "")
+    # Accept DATABASE_URL (preferred) or SUPABASE_URL for backwards compatibility
+    url = os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_URL", "")
     if not url:
-        raise RuntimeError("SUPABASE_URL environment variable is not set.")
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Set DATABASE_URL to a postgresql+asyncpg:// connection string."
+        )
 
-    # Supabase connection string format:
-    # postgresql+asyncpg://postgres:<password>@<host>:<port>/postgres
+    # Normalise to asyncpg driver
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
     elif not url.startswith("postgresql+asyncpg://"):
-        raise ValueError(f"Unsupported SUPABASE_URL scheme: {url[:30]!r}")
+        raise ValueError(f"Unsupported DATABASE_URL scheme: {url[:30]!r}")
 
     _engine = create_async_engine(
         url,

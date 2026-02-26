@@ -1,14 +1,36 @@
 {% extends "base.html" %}
 {% block title_suffix %} — Inbox{% endblock %}
 {% block content %}
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-  <h2 style="font-size:20px;font-weight:700">Inbox
-    <span class="badge badge-good" style="margin-left:8px">{{ deals|length }} deals</span>
-  </h2>
+
+{# ── Header row ───────────────────────────────────────────────────────────── #}
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <h2 style="font-size:20px;font-weight:700">Inbox
+      <span class="badge badge-good" style="margin-left:8px">{{ deals|length }} deals</span>
+    </h2>
+    {% if active_preset and active_preset not in ('custom', '', none) %}
+    <span class="badge badge-preset" title="Active assumption preset">
+      {{ active_preset | capitalize }} preset
+    </span>
+    {% endif %}
+  </div>
   {% set alert_deals = deals|selectattr('is_high_priority', 'equalto', true)|list %}
   {% if alert_deals %}
-  <span class="badge badge-alert">🔥 {{ alert_deals|length }} HIGH PRIORITY</span>
+  <span class="badge badge-alert">&#128293; {{ alert_deals|length }} HIGH PRIORITY</span>
   {% endif %}
+</div>
+
+{# ── Filter tabs ──────────────────────────────────────────────────────────── #}
+{% set cur_filter = request.query_params.get('filter', 'all') if request else 'all' %}
+<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
+  {% for fval, flabel in [('all','All'), ('multifamily','Multifamily'), ('sfh','SFH'), ('sfh_adu','SFH + ADU')] %}
+  <a href="?filter={{ fval }}"
+     style="padding:5px 12px;border-radius:16px;font-size:12px;font-weight:600;text-decoration:none;
+            background:{{ '#1a2744' if cur_filter == fval else '#edf2f7' }};
+            color:{{ '#fff' if cur_filter == fval else '#4a5568' }}">
+    {{ flabel }}
+  </a>
+  {% endfor %}
 </div>
 
 {% if not deals %}
@@ -19,35 +41,52 @@
 {% else %}
 {% for deal in deals %}
 {% set score = deal.get('deal_score', 0) %}
+{% set ptype = deal.get('property_type', '') | lower %}
 <div class="card" style="border-left:4px solid {{ '#e53e3e' if deal.get('is_high_priority') else ('#38a169' if score >= 60 else ('#d69e2e' if score >= 40 else '#718096')) }}">
+
+  {# Street View image on mobile sits above content #}
+  {% if deal.get('street_view_url') %}
+  <img src="{{ deal.street_view_url }}" alt="Street View" class="street-view-thumb"
+       style="display:none" id="sv-mobile-{{ loop.index }}">
+  {% endif %}
+
   <div style="display:flex;gap:16px;align-items:flex-start">
 
     {% if deal.get('street_view_url') %}
     <img src="{{ deal.street_view_url }}" alt="Street View" class="street-view-thumb">
     {% endif %}
 
-    <div style="flex:1">
+    <div style="flex:1;min-width:0">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
         <!-- Score ring -->
         <div class="score-ring {{ 'score-85plus' if score >= 85 else ('score-60' if score >= 60 else ('score-40' if score >= 40 else 'score-low')) }}">
           {{ score }}
         </div>
-        <div>
-          <div style="font-size:16px;font-weight:700">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
             <a href="/deal/{{ deal.get('canonical_id','') }}" style="color:#1a2744;text-decoration:none">
               {{ deal.get('address','Unknown address') }}
             </a>
           </div>
-          <div style="color:#718096;font-size:12px">
-            {{ deal.get('property_type','') }} &middot; {{ deal.get('num_units','?') }} units &middot; {{ deal.get('zip_code','') }}
+          <div style="color:#718096;font-size:12px;display:flex;gap:6px;flex-wrap:wrap;margin-top:2px">
+            <span>{{ deal.get('property_type','') }}</span>
+            <span>&middot;</span>
+            <span>{{ deal.get('num_units','?') }} units</span>
+            <span>&middot;</span>
+            <span>{{ deal.get('zip_code','') }}</span>
+            {% if ptype == 'sfr_adu' %}
+            <span class="pill pill-blue" style="font-size:11px;padding:1px 6px">ADU</span>
+            {% endif %}
           </div>
         </div>
-        {% if deal.get('is_high_priority') %}
-        <span class="badge badge-alert">🔥 HIGH PRIORITY</span>
-        {% endif %}
-        <span style="margin-left:auto;font-size:20px;font-weight:800;color:#1a2744">
-          ${{ "{:,.0f}".format(deal.get('price', 0)) }}
-        </span>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+          <span style="font-size:20px;font-weight:800;color:#1a2744;white-space:nowrap">
+            ${{ "{:,.0f}".format(deal.get('price', 0)) }}
+          </span>
+          {% if deal.get('is_high_priority') %}
+          <span class="badge badge-alert">&#128293; HIGH PRIORITY</span>
+          {% endif %}
+        </div>
       </div>
 
       <!-- Strategy highlights -->
@@ -82,6 +121,11 @@
           Flood {{ deal.flood_zone }}
         </span>
         {% endif %}
+        {% if deal.get('appraisal_gap_risk') %}
+        <span class="pill pill-red" title="Price &gt;15% above zip median sold price">
+          &#9888; Appraisal Risk
+        </span>
+        {% endif %}
         {% if deal.get('days_on_market') is not none %}
         <span class="pill">{{ deal.days_on_market }}d on market</span>
         {% endif %}
@@ -95,12 +139,12 @@
       {% endif %}
 
       <!-- Score breakdown -->
-      <div style="margin-top:10px;display:flex;gap:16px;font-size:12px;color:#718096">
-        <span>Return: <strong>{{ deal.get('return_score', '—') }}/40</strong></span>
-        <span>Risk: <strong>{{ deal.get('risk_score', '—') }}/30</strong></span>
-        <span>Confidence: <strong>{{ deal.get('confidence_score_pts', '—') }}/30</strong></span>
+      <div style="margin-top:10px;display:flex;gap:16px;font-size:12px;color:#718096;flex-wrap:wrap">
+        <span>Return: <strong>{{ deal.get('return_score', '&mdash;') }}/40</strong></span>
+        <span>Risk: <strong>{{ deal.get('risk_score', '&mdash;') }}/30</strong></span>
+        <span>Confidence: <strong>{{ deal.get('confidence_score_pts', '&mdash;') }}/30</strong></span>
         {% if deal.get('satellite_url') %}
-        <a href="{{ deal.satellite_url }}" target="_blank" style="margin-left:auto;color:#4299e1">🛰 Satellite</a>
+        <a href="{{ deal.satellite_url }}" target="_blank" style="margin-left:auto;color:#4299e1">&#128752; Satellite</a>
         {% endif %}
       </div>
     </div>

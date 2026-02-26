@@ -165,6 +165,33 @@ class TestRanker:
         assert ranked.total == 2
 
 
+class TestPropertyTypeScoring:
+    """Tests for property_type-aware scoring (SFR/ADU)."""
+
+    def test_sfr_adu_gets_adu_bonus_in_return_score(self) -> None:
+        ds_mf  = score_deal(1000, 1.3, 0.06, 2005, False, 300_000, property_type="duplex")
+        ds_adu = score_deal(1000, 1.3, 0.06, 2005, False, 300_000, property_type="sfr_adu")
+        assert ds_adu.return_score.adu_bonus == 3
+        assert ds_mf.return_score.adu_bonus == 0
+        # Deal score for ADU should be higher (by adu_bonus if not capped)
+        assert ds_adu.deal_score >= ds_mf.deal_score
+
+    def test_sfr_gets_vacancy_deduction_in_risk_score(self) -> None:
+        ds_mf  = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type="duplex")
+        ds_sfr = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type="sfr")
+        assert ds_sfr.risk_score.score == ds_mf.risk_score.score - 2
+
+    def test_sfr_adu_no_vacancy_deduction_in_risk_score(self) -> None:
+        ds_mf  = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type="duplex")
+        ds_adu = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type="sfr_adu")
+        assert ds_adu.risk_score.score == ds_mf.risk_score.score  # exempt from SFR penalty
+
+    def test_none_property_type_no_sfr_penalty(self) -> None:
+        ds_none = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type=None)
+        ds_mf   = score_deal(1000, 1.3, 0.06, 2010, False, 300_000, property_type="duplex")
+        assert ds_none.risk_score.score == ds_mf.risk_score.score
+
+
 class TestConfidencePenalty:
     """confidence_penalty=True caps Confidence Score at 19, blocking high-priority alerts."""
 

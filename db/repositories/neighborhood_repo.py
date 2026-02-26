@@ -15,7 +15,8 @@ async def upsert_neighborhood(session: AsyncSession, ns: dict[str, Any]) -> None
             crime_grade, crime_low_confidence,
             flood_zone, flood_high_risk,
             hospital_distance_miles, closest_hospital, proximity_score,
-            passed_gates, failed_gate_reasons
+            passed_gates, failed_gate_reasons,
+            street_view_url, satellite_url, maps_link
         ) VALUES (
             :property_id, :liveability_total,
             :walk_pts, :hospital_pts, :crime_pts, :flood_pts, :visual_pts,
@@ -23,7 +24,8 @@ async def upsert_neighborhood(session: AsyncSession, ns: dict[str, Any]) -> None
             :crime_grade, :crime_low_confidence,
             :flood_zone, :flood_high_risk,
             :hospital_distance_miles, :closest_hospital, :proximity_score,
-            :passed_gates, :failed_gate_reasons
+            :passed_gates, :failed_gate_reasons,
+            :street_view_url, :satellite_url, :maps_link
         )
         ON CONFLICT (property_id) DO UPDATE SET
             liveability_total       = EXCLUDED.liveability_total,
@@ -44,6 +46,9 @@ async def upsert_neighborhood(session: AsyncSession, ns: dict[str, Any]) -> None
             proximity_score         = EXCLUDED.proximity_score,
             passed_gates            = EXCLUDED.passed_gates,
             failed_gate_reasons     = EXCLUDED.failed_gate_reasons,
+            street_view_url         = EXCLUDED.street_view_url,
+            satellite_url           = EXCLUDED.satellite_url,
+            maps_link               = EXCLUDED.maps_link,
             scored_at               = NOW()
     """)
     await session.execute(stmt, {
@@ -66,6 +71,9 @@ async def upsert_neighborhood(session: AsyncSession, ns: dict[str, Any]) -> None
         "proximity_score":          ns.get("proximity_score", 0),
         "passed_gates":             ns.get("passed_gates", False),
         "failed_gate_reasons":      ns.get("failed_gate_reasons", []),
+        "street_view_url":          ns.get("street_view_url"),
+        "satellite_url":            ns.get("satellite_url"),
+        "maps_link":                ns.get("maps_link"),
     })
 
 
@@ -76,3 +84,22 @@ async def get_neighborhood(session: AsyncSession, property_id: str) -> dict | No
     )
     row = result.mappings().first()
     return dict(row) if row else None
+
+
+async def get_failed_gate_properties(session: AsyncSession, limit: int = 200) -> list[dict]:
+    """Return properties that failed hard gates (for Rejected tab)."""
+    result = await session.execute(
+        text("""
+            SELECT p.canonical_id, p.address, p.zip_code, p.price,
+                   p.property_type, p.num_units, p.days_on_market,
+                   ns.crime_grade, ns.flood_zone, ns.flood_high_risk,
+                   ns.failed_gate_reasons, ns.passed_gates
+            FROM neighborhood_scores ns
+            JOIN properties p ON ns.property_id = p.canonical_id
+            WHERE ns.passed_gates = FALSE
+            ORDER BY p.scraped_at DESC
+            LIMIT :lim
+        """),
+        {"lim": limit},
+    )
+    return [dict(r) for r in result.mappings().all()]
