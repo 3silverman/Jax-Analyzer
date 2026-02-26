@@ -524,10 +524,10 @@ async def analytics_page(request: Request):
 
 @router.post("/scan/run")
 async def trigger_scan():
-    """Manual scan trigger — runs in background."""
+    """Manual scan trigger — runs the full pipeline in background."""
     import asyncio
-    from ingestion.run_scan import run_scan
-    asyncio.create_task(asyncio.to_thread(run_scan))
+    from api.main import _run_daily_scan
+    asyncio.create_task(_run_daily_scan())
     return {"status": "scan_started"}
 
 
