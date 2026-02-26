@@ -17,6 +17,7 @@ import pytest
 
 from underwriting.calculator import (
     CashFlowResult,
+    RentSource,
     Scenario,
     Strategy,
     UnderwritingResult,
@@ -521,3 +522,116 @@ class TestEdgeCases:
         # $240k at 7.5% for 30 years ≈ $1,678.51/mo
         pmt = _monthly_payment(240_000, 0.075, 30)
         assert pmt == pytest.approx(1_678.51, abs=1.0)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RentSource enum and comp-based rate resolution
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _MockComp:
+    """Duck-typed RentalComp for testing comp selection."""
+    def __init__(self, zip_code, strategy, beds, monthly_rate):
+        self.zip_code         = zip_code
+        self.rental_strategy  = strategy
+        self.beds             = beds
+        self.monthly_rate     = monthly_rate
+
+
+class TestRentSource:
+    def test_default_source_is_prop_dict_when_monthly_rent_given(self):
+        r = underwrite(SAMPLE_PROP)
+        assert r.rent_source == RentSource.PROP_DICT
+
+    def test_no_penalty_when_rates_in_prop_dict(self):
+        r = underwrite(SAMPLE_PROP)
+        assert r.confidence_penalty is False
+
+    def test_defaults_source_when_no_rent_and_no_comps(self):
+        prop_no_rent = {k: v for k, v in SAMPLE_PROP.items()
+                        if k not in ("monthly_rent", "mtr_monthly_rate")}
+        r = underwrite(prop_no_rent)
+        assert r.rent_source == RentSource.DEFAULTS
+        assert r.confidence_penalty is True
+
+    def test_defaults_produce_zero_ltr_revenue(self):
+        prop_no_rent = {k: v for k, v in SAMPLE_PROP.items()
+                        if k not in ("monthly_rent", "mtr_monthly_rate")}
+        r = underwrite(prop_no_rent)
+        assert r.ltr.base.revenue.gross_annual_revenue == 0.0
+
+    def test_live_comps_source_when_comps_provided(self):
+        comps = [
+            _MockComp("32205", "ltr", 2, 1_200.0),
+            _MockComp("32205", "ltr", 2, 1_300.0),
+            _MockComp("32205", "ltr", 2, 1_250.0),
+        ]
+        prop = {
+            "purchase_price": 380_000,
+            "num_units":      2,
+            "zip_code":       "32205",
+            "beds":           4,
+        }
+        r = underwrite(prop, comps=comps)
+        assert r.rent_source == RentSource.LIVE_COMPS
+        assert r.confidence_penalty is False
+
+    def test_live_comps_median_rate_calculation(self):
+        # 5 comps at $1,000, $1,100, $1,200, $1,300, $1,400 → median $1,200
+        # property has 2 units → total = $1,200 × 2 = $2,400/mo
+        comps = [
+            _MockComp("32204", "ltr", 2, 1_000.0),
+            _MockComp("32204", "ltr", 2, 1_100.0),
+            _MockComp("32204", "ltr", 2, 1_200.0),
+            _MockComp("32204", "ltr", 2, 1_300.0),
+            _MockComp("32204", "ltr", 2, 1_400.0),
+        ]
+        prop = {
+            "purchase_price": 380_000,
+            "num_units":      2,
+            "zip_code":       "32204",
+            "beds":           4,
+            "interest_rate":  0.075,
+            "insurance_annual": 1_900,
+            "property_tax_annual": 2_926,
+        }
+        r = underwrite(prop, comps=comps)
+        assert r.rent_source == RentSource.LIVE_COMPS
+        # Median of [1000,1100,1200,1300,1400] at index 2 = 1200; × 2 units = 2400/mo
+        expected_gross = 2_400 * 12
+        assert r.ltr.base.revenue.gross_annual_revenue == pytest.approx(expected_gross, rel=1e-4)
+
+    def test_comps_filtered_by_zip(self):
+        # Comps in a different zip should not be used
+        comps = [
+            _MockComp("99999", "ltr", 2, 5_000.0),  # wrong zip
+        ]
+        prop = {
+            "purchase_price": 380_000,
+            "num_units":      2,
+            "zip_code":       "32204",
+            "beds":           4,
+        }
+        r = underwrite(prop, comps=comps)
+        # No matching comps for zip 32204; no prop dict rates → DEFAULTS
+        assert r.rent_source == RentSource.DEFAULTS
+        assert r.confidence_penalty is True
+
+    def test_comps_prop_dict_fallback_when_comps_have_wrong_strategy(self):
+        # MTR comps only, prop has monthly_rent → prop dict used for LTR
+        comps = [_MockComp("32204", "mtr", 2, 2_000.0)]
+        prop = {
+            "purchase_price": 380_000,
+            "num_units":      2,
+            "zip_code":       "32204",
+            "beds":           4,
+            "monthly_rent":   2_700,   # pre-filled by caller
+        }
+        r = underwrite(prop, comps=comps)
+        # One MTR comp matched, one LTR from prop_dict → LIVE_COMPS (MTR matched)
+        assert r.rent_source == RentSource.LIVE_COMPS
+        assert r.confidence_penalty is False
+
+    def test_rent_source_in_underwriting_result(self):
+        r = underwrite(SAMPLE_PROP)
+        assert isinstance(r.rent_source, RentSource)
+        assert isinstance(r.confidence_penalty, bool)

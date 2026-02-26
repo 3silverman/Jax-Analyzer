@@ -6,6 +6,11 @@ End-to-end smoke test — Dellwood triplex.
 Runs a hardcoded property through the entire pipeline (no live API calls)
 and prints the full deal card to the terminal.
 
+Demonstrates comp sourcing priority:
+  1. Live comps (passed as RentalComp-like objects) → LIVE_COMPS
+  2. Rentcast API (no key needed for smoke test) → PROP_DICT
+  3. Hardcoded defaults → DEFAULTS (triggers confidence_penalty)
+
 Usage:
     python scripts/test_property.py
 """
@@ -22,7 +27,10 @@ from datetime import datetime, timezone
 
 # ── 1. Build a synthetic PropertyRecord ───────────────────────────────────────
 
-from normalization.schema import DataSource, PropertyRecord, PropertyType, make_canonical_id
+from normalization.schema import (
+    DataSource, PropertyRecord, PropertyType, RentalComp, RentalStrategy,
+    make_canonical_id,
+)
 
 DELLWOOD_TRIPLEX = PropertyRecord(
     canonical_id   = make_canonical_id("1234 Dellwood Ave", "32204"),
@@ -69,20 +77,69 @@ sv_urls = get_street_view_urls(
     DELLWOOD_TRIPLEX.lat, DELLWOOD_TRIPLEX.lon, DELLWOOD_TRIPLEX.address
 )
 
-# ── 3. Rental comp estimates (Riverside triplex market) ───────────────────────
-# LTR: ~$1,100/unit, MTR: ~$1,800/unit/mo (furnished, near hospitals)
+# ── 3. Live VA rate ────────────────────────────────────────────────────────────
+# Attempts a real FRED fetch; gracefully falls back to 7.5% if offline.
 
-MONTHLY_LTR_RENT = 1_100 * 3    # $3,300/mo gross (all 3 units)
-MTR_MONTHLY_RATE = 1_800 * 3    # $5,400/mo gross (MTR furnished)
+from ingestion.va_rates import fetch_va_rate, VARate
 
-# ── 4. Underwriting ───────────────────────────────────────────────────────────
+va_rate: VARate = fetch_va_rate()
 
-from underwriting.calculator import underwrite, Scenario
+# ── 4. Synthetic live comps (simulate normalization output) ───────────────────
+# Represents comparable rentals in 32204 from Zillow/Rentcast.
+# Each comp is a 2BR unit (~$1,100/mo LTR, ~$1,800/mo MTR furnished).
+
+def _make_comp(strategy: RentalStrategy, monthly_rate: float, beds: int) -> RentalComp:
+    return RentalComp(
+        canonical_id    = make_canonical_id(f"comp-{strategy}-{beds}-{monthly_rate}", "32204"),
+        source          = DataSource.ZILLOW_RENTAL,
+        source_id       = f"smoke_comp_{strategy}_{beds}",
+        scraped_at      = datetime.now(tz=timezone.utc),
+        address         = f"Comp {strategy} Unit",
+        city            = "Jacksonville",
+        state           = "FL",
+        zip_code        = "32204",
+        lat             = 30.3210,
+        lon             = -81.6640,
+        beds            = beds,
+        baths           = 1.0,
+        sqft            = 800.0,
+        rental_strategy = strategy,
+        monthly_rate    = monthly_rate,
+        adr             = None,
+        utilities_included = False,
+    )
+
+# 5 LTR comps — 2BR units at ~$1,100/mo
+ltr_comps = [
+    _make_comp(RentalStrategy.LTR, 1_050.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_100.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_125.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_150.0, 2),
+    _make_comp(RentalStrategy.LTR, 1_200.0, 2),
+]
+
+# 5 MTR comps — 2BR furnished at ~$1,800/mo
+mtr_comps = [
+    _make_comp(RentalStrategy.MTR, 1_700.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_800.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_850.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_900.0, 2),
+    _make_comp(RentalStrategy.MTR, 1_950.0, 2),
+]
+
+all_comps = ltr_comps + mtr_comps
+comps_count = len(all_comps)
+
+# ── 5. Underwriting ────────────────────────────────────────────────────────────
+
+from underwriting.calculator import underwrite, Scenario, RentSource
 
 prop_dict = {
     "purchase_price":        DELLWOOD_TRIPLEX.price,
     "num_units":             DELLWOOD_TRIPLEX.num_units,
-    "interest_rate":         0.075,
+    "zip_code":              DELLWOOD_TRIPLEX.zip_code,
+    "beds":                  DELLWOOD_TRIPLEX.beds,
+    "interest_rate":         va_rate.rate,          # live or fallback VA rate
     "insurance_annual":      DELLWOOD_TRIPLEX.price * 0.005,
     "ltr_vacancy_rate":      0.08,
     "mtr_vacancy_rate":      0.10,
@@ -91,13 +148,13 @@ prop_dict = {
     "ltr_maintenance_rate":  0.01,
     "ltr_capex_rate":        0.005,
     "va_funding_fee_pct":    0.0215,
-    "monthly_rent":          MONTHLY_LTR_RENT,
-    "mtr_monthly_rate":      MTR_MONTHLY_RATE,
     "str_adr":               175.0,    # $175/night STR ADR estimate
 }
-uw = underwrite(prop_dict)
 
-# ── 5. Conservative cash flows ────────────────────────────────────────────────
+# Pass live comps → underwrite() selects top 5 by beds, computes medians
+uw = underwrite(prop_dict, comps=all_comps)
+
+# ── 6. Conservative cash flows ────────────────────────────────────────────────
 
 worst_ltr = uw.ltr.worst_case_cash_flow
 worst_mtr = uw.mtr.worst_case_cash_flow
@@ -105,7 +162,7 @@ worst_str = uw.str_.worst_case_cash_flow
 best_cf   = max(worst_ltr, worst_mtr, worst_str)
 best_base = uw.best_strategy(Scenario.BASE)
 
-# ── 6. Scoring ────────────────────────────────────────────────────────────────
+# ── 7. Scoring ────────────────────────────────────────────────────────────────
 
 from scoring.deal_scorer import score_deal
 
@@ -118,18 +175,19 @@ ds = score_deal(
     purchase_price  = DELLWOOD_TRIPLEX.price,
     raw_confidence  = 0.90,
     scraped_at      = DELLWOOD_TRIPLEX.scraped_at,
-    comps_count     = 8,
+    comps_count     = comps_count,
     address         = DELLWOOD_TRIPLEX.address,
     num_units       = DELLWOOD_TRIPLEX.num_units,
     strategy_validated = True,
+    confidence_penalty = uw.confidence_penalty,
 )
 
-# ── 7. Refi scenario ──────────────────────────────────────────────────────────
+# ── 8. Refi scenario ──────────────────────────────────────────────────────────
 
 from underwriting.calculator import _monthly_payment
 refi_pmt = _monthly_payment(uw.loan_amount, 0.055, 30)
 
-# ── 8. Print deal card ────────────────────────────────────────────────────────
+# ── 9. Print deal card ────────────────────────────────────────────────────────
 
 RESET = "\033[0m"
 BOLD  = "\033[1m"
@@ -153,11 +211,50 @@ print(f"  {DELLWOOD_TRIPLEX.property_type.value.title()} · {DELLWOOD_TRIPLEX.nu
 print(f"  List price: {c(f'${DELLWOOD_TRIPLEX.price:,.0f}', BOLD)} · {DELLWOOD_TRIPLEX.days_on_market}d on market")
 print()
 
+# VA Rate banner
+rate_color = GREEN if not va_rate.is_stale and not va_rate.is_fallback else YEL
+rate_label = {
+    "fred": "LIVE (FRED/PMMS)",
+    "cache": "CACHED",
+    "fallback": "FALLBACK — hardcoded 7.50%",
+}.get(va_rate.source, va_rate.source.upper())
+print(c("  VA RATE", BOLD))
+print(f"  {c(f'{va_rate.rate:.3%}', rate_color)}  [{rate_label}]", end="")
+if va_rate.is_stale:
+    print(f"  {c('⚠ Stale (>48h old)', YEL)}", end="")
+print()
+print()
+
+# Comp source banner
+comp_colors = {
+    RentSource.LIVE_COMPS: GREEN,
+    RentSource.PROP_DICT:  YEL,
+    RentSource.DEFAULTS:   RED,
+}
+comp_labels = {
+    RentSource.LIVE_COMPS: "LIVE COMPS  — median of top-5 matched by bed count",
+    RentSource.PROP_DICT:  "RENTCAST / MANUAL — caller pre-filled rates",
+    RentSource.DEFAULTS:   "HARDCODED DEFAULTS — no comp or Rentcast data",
+}
+comp_col = comp_colors.get(uw.rent_source, RESET)
+print(c("  COMP SOURCE", BOLD))
+print(f"  {c(comp_labels.get(uw.rent_source, str(uw.rent_source)), comp_col)}")
+if uw.rent_source == RentSource.LIVE_COMPS:
+    ltr_total = uw.ltr.base.revenue.gross_annual_revenue / 12
+    mtr_total = uw.mtr.base.revenue.gross_annual_revenue / 12
+    print(f"  {comps_count} comps used  ·  "
+          f"LTR ${ltr_total:,.0f}/mo total  ·  MTR ${mtr_total:,.0f}/mo total")
+if uw.confidence_penalty:
+    print(f"  {c('⚠ confidence_penalty=True — Confidence Score capped at 19, no HP alert possible', RED)}")
+print()
+
 # Score
 score_color = GREEN if ds.deal_score >= 60 else (YEL if ds.deal_score >= 40 else RED)
 alert_tag   = c("  🔥 HIGH PRIORITY ALERT", RED) if ds.is_high_priority else ""
 print(c(f"  DEAL SCORE: {ds.deal_score}/100", score_color) + alert_tag)
 print(f"  Return: {ds.return_score.score}/40  |  Risk: {ds.risk_score.score}/30  |  Confidence: {ds.confidence_score.score}/30")
+if ds.confidence_score.data_penalty:
+    print(f"  {c('  (Confidence capped at 19 — no comp data)', YEL)}")
 print()
 print(f"  {ds.why_scored_high}")
 print()
@@ -179,6 +276,7 @@ print(c("  VA LOAN SNAPSHOT", BOLD))
 print(f"  Purchase price:    ${DELLWOOD_TRIPLEX.price:,.0f}")
 print(f"  Funding fee (2.15%): ${uw.loan_amount - DELLWOOD_TRIPLEX.price:,.0f}")
 print(f"  Loan amount:       ${uw.loan_amount:,.0f}")
+print(f"  Rate used:         {va_rate.rate:.3%}  [{rate_label}]")
 print(f"  Monthly P&I:       ${uw.monthly_payment:,.0f}")
 tax_mo = DELLWOOD_TRIPLEX.price * 0.0077 / 12
 ins_mo = DELLWOOD_TRIPLEX.price * 0.005 / 12

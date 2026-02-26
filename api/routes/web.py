@@ -111,10 +111,31 @@ async def update_settings(
 @router.get("/assumptions", response_class=HTMLResponse)
 async def assumptions_page(request: Request):
     store = get_store()
+    from ingestion.va_rates import fetch_va_rate
+    va_rate = fetch_va_rate()
+    va_rate_ctx = {
+        "rate":            va_rate.rate,
+        "source":          va_rate.source,
+        "is_fallback":     va_rate.is_fallback,
+        "is_stale":        va_rate.is_stale,
+        "fetched_at_display": (
+            va_rate.fetched_at.strftime("%b %d %H:%M UTC")
+            if va_rate.fetched_at else "never"
+        ),
+    }
     return _tmpl(request, "assumptions.html", {
         "assumptions": store.get("assumptions", _default_assumptions()),
-        "active_tab": "assumptions",
+        "va_rate":     va_rate_ctx,
+        "active_tab":  "assumptions",
     })
+
+
+@router.get("/assumptions/refresh-rate")
+async def refresh_va_rate():
+    """Force a fresh VA rate fetch from FRED and redirect back to assumptions."""
+    from ingestion.va_rates import fetch_va_rate
+    fetch_va_rate(force_refresh=True)
+    return RedirectResponse(url="/assumptions", status_code=303)
 
 
 @router.post("/assumptions")

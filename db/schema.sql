@@ -201,7 +201,14 @@ CREATE TABLE IF NOT EXISTS assumptions (
     -- Scoring thresholds
     alert_threshold     INT              NOT NULL DEFAULT 85,
     min_cash_flow       DOUBLE PRECISION NOT NULL DEFAULT 500.0,
-    min_dscr            DOUBLE PRECISION NOT NULL DEFAULT 1.2
+    min_dscr            DOUBLE PRECISION NOT NULL DEFAULT 1.2,
+
+    -- Live VA rate (fetched from FRED / cached daily)
+    current_va_rate     DOUBLE PRECISION,          -- decimal (e.g. 0.0691); NULL = never fetched
+    rate_fetched_at     TIMESTAMPTZ,               -- UTC timestamp of last successful fetch
+    rate_is_stale       BOOLEAN          NOT NULL DEFAULT FALSE,
+    rate_source         TEXT             NOT NULL DEFAULT 'fallback'
+                        CHECK (rate_source IN ('fred', 'cache', 'fallback'))
 );
 
 -- Seed default row

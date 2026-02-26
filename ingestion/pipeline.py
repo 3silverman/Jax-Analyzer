@@ -14,6 +14,7 @@ from typing import Any
 import structlog
 
 from ingestion.run_scan import ScanResult
+from ingestion.va_rates import fetch_va_rate
 from neighborhood.crime_grade import get_crime_grade
 from neighborhood.flood_zone import get_flood_zone
 from neighborhood.gates import evaluate_gates
@@ -47,6 +48,51 @@ def _median_rate(comps: list[RentalComp]) -> float | None:
         return None
     mid = len(rates) // 2
     return rates[mid]
+
+
+# ── Rentcast fallback ──────────────────────────────────────────────────────────
+
+def _try_rentcast_rates(
+    record: PropertyRecord,
+    assumptions: dict,
+) -> tuple[float | None, float | None]:
+    """
+    Attempt to fetch zip-level rent estimates from Rentcast as a fallback
+    when no live comps are available.
+
+    Returns:
+        (ltr_rate_total, mtr_rate_total) or (None, None) on failure.
+        Rates are total for all units combined.
+    """
+    try:
+        import os
+        from ingestion.rentcast_client import RentcastClient, RentcastError
+
+        api_key = os.environ.get("RENTCAST_API_KEY", "")
+        if not api_key:
+            return None, None
+
+        client = RentcastClient(api_key=api_key)
+        num_units = record.num_units or 1
+
+        try:
+            estimate = client.get_rent_estimate(
+                address=record.address,
+                property_type=str(record.property_type),
+                bedrooms=record.beds,
+                bathrooms=record.baths,
+            )
+            ltr_rate = estimate.get("rent") or estimate.get("rentRangeLow")
+            if ltr_rate:
+                return float(ltr_rate) * num_units, None
+        except RentcastError as e:
+            logger.warning("rentcast_fallback_error", address=record.address, error=str(e))
+
+        return None, None
+
+    except Exception as exc:
+        logger.warning("rentcast_fallback_unexpected", address=record.address, error=str(exc))
+        return None, None
 
 
 # ── Neighborhood enrichment ────────────────────────────────────────────────────
@@ -121,18 +167,23 @@ def _enrich_neighborhood(record: PropertyRecord, walkscore_key: str = "", maps_k
 
 def _build_prop_dict(
     record: PropertyRecord,
-    ltr_comps: list[RentalComp],
-    mtr_comps: list[RentalComp],
     assumptions: dict,
 ) -> dict[str, Any]:
-    """Build the underwriting input dict from a PropertyRecord and comps."""
-    ltr_rate = _median_rate(ltr_comps)
-    mtr_rate = _median_rate(mtr_comps)
+    """
+    Build the base underwriting input dict from a PropertyRecord.
+
+    Note: monthly_rent and mtr_monthly_rate are NOT injected here;
+    they are resolved inside underwrite() from the comps parameter.
+    zip_code and beds are included so the comp-selector inside underwrite()
+    can filter by zip and match by bed count.
+    """
     num_units = record.num_units or 1
 
-    prop: dict[str, Any] = {
+    return {
         "purchase_price":    record.price,
         "num_units":         num_units,
+        "zip_code":          record.zip_code,
+        "beds":              record.beds or 0,
         "interest_rate":     assumptions.get("interest_rate", 0.075),
         "insurance_annual":  record.price * assumptions.get("insurance_pct", 0.005),
         "ltr_vacancy_rate":  assumptions.get("ltr_vacancy", 0.08),
@@ -143,13 +194,6 @@ def _build_prop_dict(
         "ltr_capex_rate":    assumptions.get("capex_rate", 0.005),
         "va_funding_fee_pct": assumptions.get("va_funding_fee_pct", 0.0215),
     }
-
-    if ltr_rate:
-        prop["monthly_rent"] = ltr_rate * num_units
-    if mtr_rate:
-        prop["mtr_monthly_rate"] = mtr_rate * num_units
-
-    return prop
 
 
 # ── Deal card builder ──────────────────────────────────────────────────────────
@@ -180,13 +224,6 @@ def _build_deal_card(
 
     # Stress tests (use best strategy)
     best_uw = uw_result.best_strategy()
-    stress_labels = {
-        "rate_shock":       "Rate +1%",
-        "insurance_spike":  "Insurance +50%",
-        "vacancy_shock":    "Vacancy +20pp",
-        "tax_reassessment": "Tax +25%",
-        "year1_repair":     "Year-1 Repair ($8k)",
-    }
     stress_tests = []
     for sc in list(Scenario):
         if sc.value == "base":
@@ -235,6 +272,9 @@ def _build_deal_card(
         "top_cash_flow":      strategies_ranked[0]["cash_flow"] if strategies_ranked else 0.0,
         "stress_tests":       stress_tests,
 
+        # Comp sourcing
+        "rent_source":        uw_result.rent_source.value,
+
         # Scoring
         "deal_score":         deal_score.deal_score,
         "return_score":       deal_score.return_score.score,
@@ -265,6 +305,22 @@ def run_pipeline(
     """
     if assumptions is None:
         assumptions = {}
+
+    # ── Fetch live VA rate once for the whole pipeline run ─────────────────────
+    va_rate_result = fetch_va_rate()
+    if "interest_rate" not in assumptions:
+        assumptions = {**assumptions, "interest_rate": va_rate_result.rate}
+    if va_rate_result.is_stale:
+        logger.warning(
+            "va_rate_stale",
+            rate_pct=f"{va_rate_result.rate:.3%}",
+            fetched_at=va_rate_result.fetched_at.isoformat(),
+        )
+    logger.info(
+        "va_rate_applied",
+        rate_pct=f"{va_rate_result.rate:.3%}",
+        source=va_rate_result.source,
+    )
 
     inbox_deals:    list[dict] = []
     rejected_props: list[dict] = []
@@ -298,11 +354,22 @@ def run_pipeline(
             # ── Comps ──────────────────────────────────────────────────────
             ltr_comps = _ltr_comps_for(record, scan_result.ltr_comps)
             mtr_comps = _mtr_comps_for(record, scan_result.mtr_comps)
+            all_comps = ltr_comps + mtr_comps
             comps_count = len(ltr_comps) + len(mtr_comps)
 
             # ── Underwriting ───────────────────────────────────────────────
-            prop_dict  = _build_prop_dict(record, ltr_comps, mtr_comps, assumptions)
-            uw_result  = underwrite(prop_dict)
+            prop_dict = _build_prop_dict(record, assumptions)
+
+            # If no live comps, try Rentcast as fallback before underwriting
+            if not all_comps:
+                rentcast_ltr, rentcast_mtr = _try_rentcast_rates(record, assumptions)
+                if rentcast_ltr:
+                    prop_dict["monthly_rent"] = rentcast_ltr
+                    logger.info("rentcast_fallback_used", address=record.address, ltr=rentcast_ltr)
+                if rentcast_mtr:
+                    prop_dict["mtr_monthly_rate"] = rentcast_mtr
+
+            uw_result = underwrite(prop_dict, comps=all_comps if all_comps else None)
 
             # Best conservative CF across strategies
             cf = max(
@@ -326,6 +393,7 @@ def run_pipeline(
                 address         = record.address,
                 num_units       = record.num_units,
                 strategy_validated = comps_count >= 3,
+                confidence_penalty = uw_result.confidence_penalty,
             )
 
             # ── Deal card ──────────────────────────────────────────────────
@@ -345,8 +413,17 @@ def run_pipeline(
             try:
                 ltr_comps   = _ltr_comps_for(rec, scan_result.ltr_comps)
                 mtr_comps   = _mtr_comps_for(rec, scan_result.mtr_comps)
-                prop_dict   = _build_prop_dict(rec, ltr_comps, mtr_comps, assumptions)
-                uw_result   = underwrite(prop_dict)
+                all_comps   = ltr_comps + mtr_comps
+                prop_dict   = _build_prop_dict(rec, assumptions)
+
+                if not all_comps:
+                    rentcast_ltr, rentcast_mtr = _try_rentcast_rates(rec, assumptions)
+                    if rentcast_ltr:
+                        prop_dict["monthly_rent"] = rentcast_ltr
+                    if rentcast_mtr:
+                        prop_dict["mtr_monthly_rate"] = rentcast_mtr
+
+                uw_result   = underwrite(prop_dict, comps=all_comps if all_comps else None)
                 neighborhood = _enrich_neighborhood(rec, walkscore_key, maps_key)
                 card = _build_deal_card(rec, neighborhood, uw_result, ds, len(ltr_comps) + len(mtr_comps))
                 cards.append(card)
@@ -373,5 +450,8 @@ def run_pipeline(
             "passed_gates":   len(scored_pairs),
             "alerts":         len(alert_cards),
             "errors":         scan_result.errors,
+            "va_rate_pct":    round(va_rate_result.rate * 100, 3),
+            "va_rate_source": va_rate_result.source,
+            "va_rate_stale":  va_rate_result.is_stale,
         },
     }

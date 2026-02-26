@@ -1,6 +1,7 @@
 """db/repositories/assumptions_repo.py — assumptions single-row CRUD."""
 
 from __future__ import annotations
+from datetime import datetime
 from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,15 +19,37 @@ async def update_assumptions(session: AsyncSession, updates: dict[str, Any]) -> 
         "str_vacancy", "mgmt_rate", "capex_rate", "maintenance_rate",
         "va_funding_fee_pct", "loan_term_years", "closing_costs_pct",
         "alert_threshold", "min_cash_flow", "min_dscr",
+        "current_va_rate", "rate_fetched_at", "rate_is_stale", "rate_source",
     }
     filtered = {k: v for k, v in updates.items() if k in allowed}
     if not filtered:
         return
     set_clause = ", ".join(f"{k} = :{k}" for k in filtered)
-    filtered["updated_at_now"] = "NOW()"
     await session.execute(
         text(f"UPDATE assumptions SET {set_clause}, updated_at = NOW() WHERE id = 1"),
         filtered,
+    )
+
+
+async def update_va_rate(
+    session: AsyncSession,
+    rate: float,
+    fetched_at: datetime,
+    source: str,
+    is_stale: bool = False,
+) -> None:
+    """Store the latest VA rate fetch result in the assumptions row."""
+    await session.execute(
+        text(
+            "UPDATE assumptions SET "
+            "current_va_rate = :rate, "
+            "rate_fetched_at = :fetched_at, "
+            "rate_source = :source, "
+            "rate_is_stale = :is_stale, "
+            "updated_at = NOW() "
+            "WHERE id = 1"
+        ),
+        {"rate": rate, "fetched_at": fetched_at, "source": source, "is_stale": is_stale},
     )
 
 
@@ -46,4 +69,8 @@ def _defaults() -> dict[str, Any]:
         "alert_threshold":  85,
         "min_cash_flow":    500.0,
         "min_dscr":         1.2,
+        "current_va_rate":  None,
+        "rate_fetched_at":  None,
+        "rate_is_stale":    False,
+        "rate_source":      "fallback",
     }

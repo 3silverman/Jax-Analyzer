@@ -130,6 +130,7 @@ def score_deal(
     address: str | None = None,
     num_units: int | None = None,
     strategy_validated: bool = False,
+    confidence_penalty: bool = False,
 ) -> DealScore:
     """
     Compute the full Deal Score for a property.
@@ -150,6 +151,9 @@ def score_deal(
         address:          Property address string.
         num_units:        Number of units.
         strategy_validated: At least one strategy backed by comps.
+        confidence_penalty: If True, Confidence Score is hard-capped at 19 so
+                            the property cannot trigger a high-priority alert.
+                            Set when underwriting has no live comp or Rentcast data.
 
     Returns:
         DealScore with full component breakdown and alert status.
@@ -165,6 +169,7 @@ def score_deal(
     conf_s   = compute_confidence_score(
         raw_confidence, scraped_at, comps_count,
         purchase_price, address, num_units,
+        confidence_penalty=confidence_penalty,
     )
 
     deal_score = min(100, return_s.score + risk_s.score + conf_s.score)

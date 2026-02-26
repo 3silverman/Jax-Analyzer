@@ -11,6 +11,12 @@ Bonus/penalty table (applied after base mapping):
   +5 if rental comps count ≥ 5
   +3 if scrape age < 24 hours
   -5 if any critical field is missing (price, address, unit count)
+
+Hard cap:
+  confidence_penalty=True (from underwriting) caps score at 19 so the property
+  cannot meet the high-priority alert threshold of ≥ 20/30.  This flag is set
+  when the underwriting engine falls back to zero-rent defaults due to missing
+  comp data from both live comps and Rentcast.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ class ConfidenceScore:
     fresh_bonus:  int     # 0 or +3
     field_penalty: int    # 0 or -5
     missing_critical: list[str]
+    data_penalty: bool    # True if score was capped at 19 due to missing comp/rent data
 
 
 def compute_confidence_score(
@@ -36,17 +43,23 @@ def compute_confidence_score(
     price: float | None = None,
     address: str | None = None,
     num_units: int | None = None,
+    confidence_penalty: bool = False,
 ) -> ConfidenceScore:
     """
     Compute the Confidence Score (0–30).
 
     Args:
-        raw_confidence: Normalization confidence float 0.0–1.0.
-        scraped_at:     UTC datetime when the property was scraped.
-        comps_count:    Number of validated rental comps available.
-        price:          Property purchase price (None = missing).
-        address:        Property address string (None/empty = missing).
-        num_units:      Number of units (None = missing).
+        raw_confidence:     Normalization confidence float 0.0–1.0.
+        scraped_at:         UTC datetime when the property was scraped.
+        comps_count:        Number of validated rental comps available.
+        price:              Property purchase price (None = missing).
+        address:            Property address string (None/empty = missing).
+        num_units:          Number of units (None = missing).
+        confidence_penalty: If True, score is hard-capped at 19.  Set when the
+                            underwriting engine has no live comp or Rentcast data
+                            and falls back to zero-rent defaults.  This prevents
+                            the property from triggering a high-priority alert
+                            (which requires Confidence ≥ 20/30).
 
     Returns:
         ConfidenceScore dataclass.
@@ -77,6 +90,13 @@ def compute_confidence_score(
     raw   = base_pts + comp_bonus + fresh_bonus - field_penalty
     score = max(0, min(30, raw))
 
+    # ── Hard cap when no rent data is available ───────────────────────────────
+    # Ensures properties with no comp or Rentcast data cannot trigger alerts.
+    data_penalty = False
+    if confidence_penalty and score >= 20:
+        score = 19
+        data_penalty = True
+
     return ConfidenceScore(
         score          = score,
         base_pts       = base_pts,
@@ -84,4 +104,5 @@ def compute_confidence_score(
         fresh_bonus    = fresh_bonus,
         field_penalty  = field_penalty,
         missing_critical = missing_critical,
+        data_penalty   = data_penalty,
     )

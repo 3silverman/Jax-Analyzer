@@ -70,6 +70,12 @@ class Strategy(str, Enum):
     STR = "STR"
 
 
+class RentSource(str, Enum):
+    LIVE_COMPS = "live_comps"   # median of top-5 comps by bed-count + zip match
+    PROP_DICT  = "prop_dict"    # caller pre-filled monthly_rent / mtr_monthly_rate
+    DEFAULTS   = "defaults"     # no data; falls back to 0.0 — confidence_penalty applies
+
+
 class Scenario(str, Enum):
     BASE             = "base"
     STRESS_RATE      = "stress_rate"       # interest rate +1%
@@ -219,6 +225,10 @@ class UnderwritingResult:
     mtr:  StrategyResult
     str_: StrategyResult   # str is a built-in; attribute named str_
 
+    # Comp sourcing metadata
+    rent_source:       RentSource = RentSource.PROP_DICT
+    confidence_penalty: bool      = False   # True when no comp or Rentcast data available
+
     @property
     def all_results(self) -> list[CashFlowResult]:
         results: list[CashFlowResult] = []
@@ -258,6 +268,118 @@ def _get(prop: dict[str, Any], key: str, default: Any) -> Any:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return default
     return v
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Comp-based rent resolution
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _median_rates_list(rates: list[float]) -> float | None:
+    """Return the median of a list of rates, or None if empty."""
+    if not rates:
+        return None
+    s = sorted(rates)
+    mid = len(s) // 2
+    return s[mid]
+
+
+def _strategy_matches(strategy_attr: Any, target: str) -> bool:
+    """
+    Compare a comp's rental_strategy attribute against a lowercase string target.
+
+    Handles:
+    - str, Enum values (e.g. RentalStrategy.LTR == "ltr" → True)
+    - Plain string values ("ltr", "LTR", etc.)
+    - None → False
+    """
+    if strategy_attr is None:
+        return False
+    # str, Enum compares equal to its value string directly
+    if strategy_attr == target:
+        return True
+    # Fallback: compare value attribute (covers non-str enums and plain strings)
+    val = getattr(strategy_attr, "value", strategy_attr)
+    return str(val).lower() == target
+
+
+def _select_ltr_mtr_rates(
+    prop: dict[str, Any],
+    comps: list[Any] | None,
+) -> tuple[float | None, float | None, RentSource, bool]:
+    """
+    Resolve LTR and MTR monthly rent rates from available data sources.
+
+    Priority order:
+      1. Live comps (RentalComp objects): median of top-5 by bed-count proximity
+         within the same zip code. Per-unit rate × num_units.
+      2. Prop dict: monthly_rent / mtr_monthly_rate pre-filled by caller
+         (e.g. from a Rentcast API response).
+      3. Defaults (0.0): confidence_penalty=True forces Confidence Score < 20
+         so the property cannot trigger a high-priority alert.
+
+    Args:
+        prop:  Property dict (may already contain monthly_rent/mtr_monthly_rate).
+        comps: Optional list of RentalComp-like objects (duck-typed).
+
+    Returns:
+        (ltr_rate, mtr_rate, rent_source, confidence_penalty)
+        Rates are total for the whole property (all units combined).
+    """
+    if comps:
+        target_zip   = str(prop.get("zip_code", ""))
+        num_units    = int(_get(prop, "num_units", 1))
+        target_beds  = float(_get(prop, "beds", 0))
+        beds_pu      = target_beds / num_units if num_units > 0 else target_beds
+
+        def _pick_top5_rates(strategy_val: str) -> list[float]:
+            matching = [
+                c for c in comps
+                if (
+                    str(getattr(c, "zip_code", "")) == target_zip
+                    and _strategy_matches(getattr(c, "rental_strategy", None), strategy_val)
+                )
+            ]
+            # Sort by bedroom-count proximity (closest unit-mix match first)
+            matching.sort(
+                key=lambda c: abs((getattr(c, "beds", None) or 0) - beds_pu)
+            )
+            return [
+                r for r in (
+                    getattr(c, "monthly_rate", None) for c in matching[:5]
+                )
+                if r and r > 0
+            ]
+
+        ltr_rates = _pick_top5_rates("ltr")
+        mtr_rates = _pick_top5_rates("mtr")
+
+        ltr_rate = _median_rates_list(ltr_rates)
+        mtr_rate = _median_rates_list(mtr_rates)
+
+        # Comps are per-unit; scale to total property income
+        if ltr_rate:
+            ltr_rate = ltr_rate * num_units
+        if mtr_rate:
+            mtr_rate = mtr_rate * num_units
+
+        if ltr_rate or mtr_rate:
+            return ltr_rate, mtr_rate, RentSource.LIVE_COMPS, False
+
+        # Comps provided but none matched zip/strategy — fall through to prop dict
+
+    # Check if caller pre-filled rates (e.g. from Rentcast)
+    ltr_rate = prop.get("monthly_rent")
+    mtr_rate = prop.get("mtr_monthly_rate")
+    if ltr_rate or mtr_rate:
+        return (
+            float(ltr_rate) if ltr_rate else None,
+            float(mtr_rate) if mtr_rate else None,
+            RentSource.PROP_DICT,
+            False,
+        )
+
+    # No data from any source
+    return None, None, RentSource.DEFAULTS, True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -523,17 +645,27 @@ def _str(
 # Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-def underwrite(prop: dict[str, Any]) -> UnderwritingResult:
+def underwrite(
+    prop: dict[str, Any],
+    comps: list[Any] | None = None,
+) -> UnderwritingResult:
     """
     Underwrite a property across LTR, MTR, and STR strategies with a base case
     and five individual stress-test scenarios each.
 
     Args:
-        prop: Property dictionary. See module docstring for full key list.
-              Uses VA loan defaults (0% down, 2.15% funding fee rolled into loan).
+        prop:  Property dictionary. See module docstring for full key list.
+               Uses VA loan defaults (0% down, 2.15% funding fee rolled into loan).
+        comps: Optional list of RentalComp objects (or any duck-typed objects with
+               zip_code, rental_strategy, beds, monthly_rate attributes).
+               If provided, LTR/MTR rates are derived from the median of the top-5
+               comps by bed-count proximity within the same zip code.
+               If None, monthly_rent / mtr_monthly_rate must be pre-set in prop, or
+               rates fall back to 0.0 with confidence_penalty=True.
 
     Returns:
         UnderwritingResult containing StrategyResults for LTR, MTR, STR.
+        The rent_source and confidence_penalty fields reflect how rates were resolved.
 
     Raises:
         ValueError: If purchase_price is missing or ≤ 0.
@@ -541,6 +673,16 @@ def underwrite(prop: dict[str, Any]) -> UnderwritingResult:
     purchase_price: float = _get(prop, "purchase_price", None)
     if not purchase_price or purchase_price <= 0:
         raise ValueError("property dict must include a positive 'purchase_price'")
+
+    # ── Resolve rent rates from comps or prop dict ─────────────────────────────
+    ltr_rate, mtr_rate, rent_source, confidence_penalty = _select_ltr_mtr_rates(prop, comps)
+
+    # Build a local copy of prop with resolved rates injected
+    prop = dict(prop)
+    if ltr_rate is not None:
+        prop["monthly_rent"] = ltr_rate
+    if mtr_rate is not None:
+        prop["mtr_monthly_rate"] = mtr_rate
 
     va_fee_pct   = _get(prop, "va_funding_fee_pct", 0.0215)
     base_rate    = _get(prop, "interest_rate",       0.075)
@@ -586,4 +728,6 @@ def underwrite(prop: dict[str, Any]) -> UnderwritingResult:
         ltr  = StrategyResult(Strategy.LTR, ltr_scenarios),
         mtr  = StrategyResult(Strategy.MTR, mtr_scenarios),
         str_ = StrategyResult(Strategy.STR, str_scenarios),
+        rent_source        = rent_source,
+        confidence_penalty = confidence_penalty,
     )

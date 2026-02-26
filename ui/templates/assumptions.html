@@ -8,10 +8,48 @@
   All rates are percentages (e.g. enter 7.5 for 7.5%).
 </p>
 
+{# ── Live VA Rate Banner ───────────────────────────────────────────── #}
+<div class="card" style="margin-bottom:16px;border-left:4px solid {% if va_rate.is_stale %}#e53e3e{% elif va_rate.is_fallback %}#dd6b20{% else %}#38a169{% endif %}">
+  <div style="display:flex;align-items:center;gap:12px">
+    <div style="font-size:28px;font-weight:800;color:#1a2744">
+      {{ "%.3f"|format(va_rate.rate * 100) }}%
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:600;color:#1a2744">
+        Current VA 30-Year Fixed Rate
+        {% if va_rate.is_fallback %}
+        <span style="background:#fff3cd;color:#856404;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:6px">FALLBACK</span>
+        {% elif va_rate.is_stale %}
+        <span style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:6px">STALE</span>
+        {% else %}
+        <span style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:3px;font-size:11px;margin-left:6px">LIVE</span>
+        {% endif %}
+      </div>
+      <div style="font-size:12px;color:#718096;margin-top:2px">
+        {% if va_rate.is_fallback %}
+          No live data — using hardcoded default. VA rates won't trigger high-priority alerts without verified market data.
+        {% elif va_rate.is_stale %}
+          Rate data is over 48 hours old (fetched {{ va_rate.fetched_at_display }}).
+          <a href="/assumptions/refresh-rate" style="color:#e53e3e;text-decoration:underline">Refresh now</a>
+        {% else %}
+          Source: {{ va_rate.source | upper }} · Fetched {{ va_rate.fetched_at_display }}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
 <form action="/assumptions" method="post">
 <div class="card">
   <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Loan Parameters</h3>
-  <label>Interest Rate (%)</label>
+  <label>
+    Interest Rate (%)
+    {% if not va_rate.is_fallback and not va_rate.is_stale %}
+    <span style="font-size:11px;color:#718096;font-weight:400;margin-left:6px">
+      Live VA rate auto-applied · manual entry overrides
+    </span>
+    {% endif %}
+  </label>
   <input type="number" name="interest_rate" value="{{ assumptions.interest_rate }}" step="0.125" min="0" max="20">
 
   <label>Annual Insurance (% of purchase price)</label>

@@ -163,3 +163,82 @@ class TestRanker:
         ds_bad = score_deal(300, 1.1, 0.01, 1920, True, 300_000)
         ranked = rank_deals([("a", ds_good), ("b", ds_bad)])
         assert ranked.total == 2
+
+
+class TestConfidencePenalty:
+    """confidence_penalty=True caps Confidence Score at 19, blocking high-priority alerts."""
+
+    def test_confidence_penalty_caps_score_at_19(self) -> None:
+        ds = score_deal(
+            conservative_monthly_cash_flow=800,
+            dscr=1.3,
+            cash_on_cash=0.06,
+            year_built=2000,
+            flood_high_risk=False,
+            purchase_price=300_000,
+            raw_confidence=1.0,      # would normally give max confidence
+            scraped_at=_now(),
+            comps_count=10,
+            address="100 Oak St",
+            num_units=2,
+            confidence_penalty=True,  # force cap
+        )
+        assert ds.confidence_score.score <= 19
+        assert ds.confidence_score.data_penalty is True
+
+    def test_confidence_penalty_blocks_high_priority_alert(self) -> None:
+        # All alert conditions met except confidence is capped by penalty
+        ds = score_deal(
+            conservative_monthly_cash_flow=800,
+            dscr=1.3,
+            cash_on_cash=0.08,
+            year_built=2005,
+            flood_high_risk=False,
+            purchase_price=300_000,
+            raw_confidence=1.0,
+            scraped_at=_now(),
+            comps_count=10,
+            address="100 Oak St",
+            num_units=2,
+            strategy_validated=True,
+            confidence_penalty=True,  # should block alert
+        )
+        assert ds.is_high_priority is False
+        assert any("Confidence Score" in r for r in ds.alert_reasons)
+
+    def test_no_penalty_flag_allows_normal_confidence(self) -> None:
+        ds = score_deal(
+            conservative_monthly_cash_flow=800,
+            dscr=1.3,
+            cash_on_cash=0.06,
+            year_built=2000,
+            flood_high_risk=False,
+            purchase_price=300_000,
+            raw_confidence=1.0,
+            scraped_at=_now(),
+            comps_count=10,
+            address="100 Oak St",
+            num_units=2,
+            confidence_penalty=False,
+        )
+        assert ds.confidence_score.score >= 20
+        assert ds.confidence_score.data_penalty is False
+
+    def test_penalty_only_caps_if_score_already_at_or_above_20(self) -> None:
+        # If raw confidence already below 20, penalty has no additional effect
+        ds = score_deal(
+            conservative_monthly_cash_flow=800,
+            dscr=1.3,
+            cash_on_cash=0.06,
+            year_built=2000,
+            flood_high_risk=False,
+            purchase_price=300_000,
+            raw_confidence=0.20,     # low raw → low base
+            scraped_at=_now(),
+            comps_count=0,
+            address="100 Oak St",
+            num_units=2,
+            confidence_penalty=True,
+        )
+        # Score was already below 20 — data_penalty is False (cap not needed)
+        assert ds.confidence_score.data_penalty is False
