@@ -46,6 +46,7 @@ def _build_engine():
         pool_size=5,
         max_overflow=10,
         pool_pre_ping=True,
+        connect_args={"prepared_statement_cache_size": 0},
     )
     _Session = async_sessionmaker(_engine, expire_on_commit=False)
 
