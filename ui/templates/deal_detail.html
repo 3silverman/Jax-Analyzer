@@ -146,6 +146,65 @@
     </table>
   </div>
 
+  <!-- STR Comp Intelligence -->
+  {% if deal.get('str_comp_count', 0) > 0 %}
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">
+      STR Comp Intelligence
+      <span class="badge {{ 'badge-good' if deal.get('str_confidence') == 'HIGH' else ('badge-neutral' if deal.get('str_confidence') == 'MEDIUM' else 'badge-alert') }}"
+            style="margin-left:6px;font-size:10px">
+        {{ deal.get('str_confidence','—') }}
+      </span>
+      {% if deal.get('str_validated') %}
+      <span class="badge badge-good" style="margin-left:4px;font-size:10px">VALIDATED</span>
+      {% endif %}
+    </h3>
+    <div class="card-grid" style="grid-template-columns:1fr 1fr">
+      <div>
+        <div class="stat-label">Comps Found</div>
+        <div class="stat-value">{{ deal.get('str_comp_count', 0) }}</div>
+      </div>
+      <div>
+        <div class="stat-label">Median ADR</div>
+        <div class="stat-value">
+          {% if deal.get('str_median_adr') %}${{ "{:,.0f}".format(deal.str_median_adr) }}/night
+          {% else %}—{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="stat-label">Est. Occupancy</div>
+        <div class="stat-value">
+          {% if deal.get('str_occupancy') %}{{ "{:.0f}".format(deal.str_occupancy * 100) }}%
+          {% else %}—{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="stat-label">Gross/mo (per unit)</div>
+        <div class="stat-value">
+          {% if deal.get('str_gross_monthly') %}${{ "{:,.0f}".format(deal.str_gross_monthly) }}
+          {% else %}—{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="stat-label">Net/mo (per unit)</div>
+        <div class="stat-value" style="color:{{ '#38a169' if (deal.get('str_net_monthly') or 0) > 0 else '#e53e3e' }}">
+          {% if deal.get('str_net_monthly') is not none %}${{ "{:,.0f}".format(deal.str_net_monthly) }}
+          {% else %}—{% endif %}
+        </div>
+      </div>
+      <div>
+        <div class="stat-label">Source</div>
+        <div class="stat-value" style="font-size:11px">Airbnb via Apify</div>
+      </div>
+    </div>
+    {% if deal.get('str_sample_addresses') %}
+    <div style="margin-top:10px;font-size:11px;color:#718096">
+      <strong>Sample comps:</strong> {{ deal.str_sample_addresses | join(' · ') }}
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <!-- Score Breakdown -->
   <div class="card" style="margin-bottom:20px">
     <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Score Breakdown</h3>

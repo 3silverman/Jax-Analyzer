@@ -10,6 +10,7 @@ and returns a list of deal dicts ready for the UI / DB.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import structlog
@@ -254,41 +255,94 @@ def _try_rentcast_cached(
     return rc_comps, ltr_estimate
 
 
-# ── AirDNA STR validation ──────────────────────────────────────────────────────
+# ── Airbnb STR comps ───────────────────────────────────────────────────────────
 
-def _try_airdna_str(record: PropertyRecord) -> tuple[float | None, bool]:
+def _try_airbnb_str_comps(
+    record: PropertyRecord,
+) -> "tuple[StrCompResult | None, bool]":
     """
-    Attempt to get an STR revenue estimate from AirDNA.
+    Fetch Airbnb STR comps for a property, with weekly DB cache.
+
+    Cache key: (zip_code, beds_per_unit, ISO-week-number).
+    On a cache hit the actor is NOT called — the same week's results are reused
+    across all properties with the same zip + bed count.
 
     Returns:
-        (monthly_revenue_total, strategy_validated)
-        strategy_validated=True only when AirDNA data is available.
+        (StrCompResult | None, str_validated)
     """
     try:
-        from ingestion.airdna_client import get_multi_unit_str_estimate
+        from ingestion.airbnb_comps import get_str_comps, StrCompResult
+        from db.repositories.airbnb_cache_repo import (
+            get_cached_str_comps,
+            upsert_str_comp_cache,
+        )
+        from db.connection import get_session
 
-        if not record.lat or not record.lon:
+        if not record.zip_code:
             return None, False
 
-        num_units   = record.num_units or 1
-        beds        = record.beds or 0
+        num_units     = record.num_units or 1
+        beds          = record.beds or 0
         beds_per_unit = max(1, round(beds / num_units))
+        week_number   = datetime.now(tz=timezone.utc).isocalendar()[1]
 
-        est = get_multi_unit_str_estimate(
-            lat=record.lat,
-            lon=record.lon,
-            num_units=num_units,
-            beds_per_unit=beds_per_unit,
-        )
-        if est:
-            logger.info("airdna_str_validated",
-                        address=record.address, monthly=est.monthly_revenue)
-            return est.monthly_revenue, True
+        # ── Cache check ───────────────────────────────────────────────────────
+        async def _check_cache():
+            async with get_session() as session:
+                return await get_cached_str_comps(
+                    session, record.zip_code, beds_per_unit, week_number
+                )
+
+        cached = _sync_db(_check_cache())
+        if cached is not None:
+            logger.info(
+                "airbnb_cache_hit",
+                zip_code=record.zip_code,
+                bedrooms=beds_per_unit,
+                week=week_number,
+            )
+            result = StrCompResult(
+                comp_count=cached["comp_count"],
+                median_adr=cached["median_adr"],
+                estimated_occupancy=cached["estimated_occupancy"],
+                gross_monthly=cached["gross_monthly"],
+                net_monthly=cached["net_monthly"],
+                confidence=cached["confidence"],
+                str_validated=bool(cached["str_validated"]),
+            )
+            return result, result.str_validated
+
+        # ── Live actor call ───────────────────────────────────────────────────
+        result = get_str_comps(record.zip_code, beds_per_unit)
+
+        async def _write_cache():
+            async with get_session() as session:
+                await upsert_str_comp_cache(
+                    session,
+                    zip_code=record.zip_code,
+                    bedrooms=beds_per_unit,
+                    week_number=week_number,
+                    comp_count=result.comp_count,
+                    median_adr=result.median_adr,
+                    estimated_occupancy=result.estimated_occupancy,
+                    gross_monthly=result.gross_monthly,
+                    net_monthly=result.net_monthly,
+                    confidence=result.confidence,
+                    str_validated=result.str_validated,
+                    comps_json=result.comps[:20] if result.comps else [],
+                )
+                await session.commit()
+
+        try:
+            _sync_db(_write_cache())
+        except Exception as exc:
+            logger.debug("airbnb_cache_write_error", error=str(exc))
+
+        return result, result.str_validated
 
     except Exception as exc:
-        logger.warning("airdna_str_error", address=record.address, error=str(exc))
-
-    return None, False
+        logger.warning("airbnb_str_error", address=record.address, error=str(exc))
+        return None, False
 
 
 # ── Redfin sold comps ──────────────────────────────────────────────────────────
@@ -493,7 +547,7 @@ def _build_deal_card(
     deal_score,
     comps_count: int,
     zip_median_sold: float | None = None,
-    airdna_monthly: float | None = None,
+    str_comp: "StrCompResult | None" = None,
 ) -> dict[str, Any]:
     base_ltr = uw_result.ltr.base
     base_mtr = uw_result.mtr.base
@@ -570,7 +624,15 @@ def _build_deal_card(
 
         # Comp sourcing
         "rent_source":        uw_result.rent_source.value,
-        "airdna_monthly":     airdna_monthly,
+        # STR comp intelligence
+        "str_comp_count":       str_comp.comp_count          if str_comp else 0,
+        "str_median_adr":       str_comp.median_adr          if str_comp else None,
+        "str_occupancy":        str_comp.estimated_occupancy if str_comp else None,
+        "str_gross_monthly":    str_comp.gross_monthly       if str_comp else None,
+        "str_net_monthly":      str_comp.net_monthly         if str_comp else None,
+        "str_confidence":       str_comp.confidence          if str_comp else "LOW",
+        "str_validated":        str_comp.str_validated       if str_comp else False,
+        "str_sample_addresses": str_comp.sample_addresses    if str_comp else [],
 
         # Appraisal gap
         "appraisal_gap_risk": appraisal_gap_risk,
@@ -679,10 +741,18 @@ def run_pipeline(
                     ltr=rentcast_ltr,
                 )
 
-            # AirDNA STR validation
-            airdna_monthly, str_validated = _try_airdna_str(record)
-            if airdna_monthly and airdna_monthly > 0:
-                prop_dict["str_monthly_revenue"] = airdna_monthly
+            # Airbnb STR comps
+            str_result, str_validated = _try_airbnb_str_comps(record)
+            if str_result and str_result.median_adr and str_result.median_adr > 0:
+                num_units = record.num_units or 1
+                prop_dict["str_adr"]          = str_result.median_adr * num_units
+                prop_dict["str_vacancy_rate"] = 1.0 - (str_result.estimated_occupancy or 0.60)
+                logger.info(
+                    "airbnb_str_applied",
+                    address=record.address,
+                    adr=prop_dict["str_adr"],
+                    occ=str_result.estimated_occupancy,
+                )
 
             uw_result = underwrite(prop_dict, comps=all_comps if all_comps else None)
 
@@ -761,7 +831,7 @@ def run_pipeline(
             card = _build_deal_card(
                 record, neighborhood, uw_result, deal_score, comps_count,
                 zip_median_sold=zip_median,
-                airdna_monthly=airdna_monthly,
+                str_comp=str_result,
             )
             scored_pairs.append((record, deal_score))
 
@@ -789,7 +859,11 @@ def run_pipeline(
                 if not all_comps and rentcast_ltr:
                     prop_dict["monthly_rent"] = rentcast_ltr
 
-                airdna_monthly, _ = _try_airdna_str(rec)
+                str_result_c, _ = _try_airbnb_str_comps(rec)
+                if str_result_c and str_result_c.median_adr and str_result_c.median_adr > 0:
+                    num_units_c = rec.num_units or 1
+                    prop_dict["str_adr"]          = str_result_c.median_adr * num_units_c
+                    prop_dict["str_vacancy_rate"] = 1.0 - (str_result_c.estimated_occupancy or 0.60)
                 uw_result   = underwrite(prop_dict, comps=all_comps if all_comps else None)
                 neighborhood = _enrich_neighborhood(rec, walkscore_key, maps_key)
                 zip_median  = zip_medians.get(rec.zip_code)
@@ -797,7 +871,7 @@ def run_pipeline(
                     rec, neighborhood, uw_result, ds,
                     len(ltr_comps) + len(mtr_comps),
                     zip_median_sold=zip_median,
-                    airdna_monthly=airdna_monthly,
+                    str_comp=str_result_c,
                 )
                 cards.append(card)
             except Exception:

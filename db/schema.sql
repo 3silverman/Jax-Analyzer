@@ -263,3 +263,24 @@ CREATE TABLE IF NOT EXISTS rentcast_cache (
     ltr_estimate    DOUBLE PRECISION,          -- result of get_rent_estimate() (per month, all units)
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- ── airbnb_comp_cache ──────────────────────────────────────────
+-- Weekly per-zip/bedrooms cache for Airbnb STR comp results.
+-- Key: (zip_code, bedrooms, week_number) — reused across all properties
+-- in the same zip with the same bedroom count within a calendar week.
+CREATE TABLE IF NOT EXISTS airbnb_comp_cache (
+    zip_code             TEXT        NOT NULL,
+    bedrooms             INT         NOT NULL,
+    week_number          INT         NOT NULL,
+    comp_count           INT         NOT NULL DEFAULT 0,
+    median_adr           DOUBLE PRECISION,
+    estimated_occupancy  DOUBLE PRECISION,
+    gross_monthly        DOUBLE PRECISION,
+    net_monthly          DOUBLE PRECISION,
+    confidence           TEXT        NOT NULL DEFAULT 'LOW',
+    str_validated        BOOLEAN     NOT NULL DEFAULT FALSE,
+    comps_json           TEXT,                -- JSON array of raw comp dicts (capped at 20)
+    fetched_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (zip_code, bedrooms, week_number)
+);
