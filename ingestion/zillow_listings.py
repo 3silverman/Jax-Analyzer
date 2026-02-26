@@ -25,34 +25,18 @@ logger = structlog.get_logger(__name__)
 
 # ── Actor configuration ────────────────────────────────────────────────────────
 
-# Multifamily for-sale in each target zip (mf=true, sf=false)
-_MF_SEARCH_URLS: list[str] = [
-    "https://www.zillow.com/jacksonville-fl-32204/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32205/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32206/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32207/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32210/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32211/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32217/?searchQueryState=%7B%22filterState%22%3A%7B%22mf%22%3A%7B%22value%22%3Atrue%7D%2C%22sf%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-]
-
-# SFH for-sale in target zips (sf=true, mf=false) — kept separate to control volume
-_SFH_SEARCH_URLS: list[str] = [
-    "https://www.zillow.com/jacksonville-fl-32204/?searchQueryState=%7B%22filterState%22%3A%7B%22sf%22%3A%7B%22value%22%3Atrue%7D%2C%22mf%22%3A%7B%22value%22%3Afalse%7D%2C%22con%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32205/?searchQueryState=%7B%22filterState%22%3A%7B%22sf%22%3A%7B%22value%22%3Atrue%7D%2C%22mf%22%3A%7B%22value%22%3Afalse%7D%2C%22con%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32206/?searchQueryState=%7B%22filterState%22%3A%7B%22sf%22%3A%7B%22value%22%3Atrue%7D%2C%22mf%22%3A%7B%22value%22%3Afalse%7D%2C%22con%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32207/?searchQueryState=%7B%22filterState%22%3A%7B%22sf%22%3A%7B%22value%22%3Atrue%7D%2C%22mf%22%3A%7B%22value%22%3Afalse%7D%2C%22con%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-]
-
-_SFH_ACTOR_INPUT: dict[str, Any] = {
-    "startUrls": [{"url": url} for url in _SFH_SEARCH_URLS],
-    "maxItems":  200,   # Limit SFH volume; we only care about ADU properties
+_MF_ACTOR_INPUT: dict[str, Any] = {
+    "zipCodes": ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
+    "type": "for_sale",
+    "maxItems": 500,
     "proxy": {"useApifyProxy": True},
 }
 
-_MF_ACTOR_INPUT: dict[str, Any] = {
-    "startUrls": [{"url": url} for url in _MF_SEARCH_URLS],
-    "maxItems":  500,
+# SFH input covers priority 4 zips only to control volume; we only care about ADU properties
+_SFH_ACTOR_INPUT: dict[str, Any] = {
+    "zipCodes": ["32204", "32205", "32206", "32207"],
+    "type": "for_sale",
+    "maxItems": 200,
     "proxy": {"useApifyProxy": True},
 }
 

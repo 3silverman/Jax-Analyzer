@@ -7,10 +7,10 @@ Format: "owner~actor-name"  (e.g. "maxcopell~zillow-scraper")
 """
 
 # Zillow for-sale listings and rental comps
-ZILLOW_SCRAPER: str = "maxcopell~zillow-scraper"
+ZILLOW_SCRAPER: str = "maxcopell~zillow-zip-search"
 
 # Furnished Finder MTR comps
-FURNISHED_FINDER_SCRAPER: str = "memo23~furnishedfinder-scraper-cheerio"
+FURNISHED_FINDER_SCRAPER: str = "rigelbytes~furnishedfinder"
 
 # Airbnb STR comps
 AIRBNB_SCRAPER: str = "tri_angle~airbnb-scraper"
