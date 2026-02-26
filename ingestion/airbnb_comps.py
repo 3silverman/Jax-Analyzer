@@ -1,7 +1,7 @@
 """
 ingestion/airbnb_comps.py
 
-Airbnb STR comp engine using the Apify tri_angle/airbnb-scraper actor.
+Airbnb STR comp engine using the Apify AIRBNB_SCRAPER (see ingestion/actor_ids.py) actor.
 
 Fetches active Airbnb listings near a zip code + bedroom count combination,
 applies 2σ outlier filtering, estimates occupancy from a review-count proxy,
@@ -21,9 +21,9 @@ from typing import Any
 
 import structlog
 
-logger = structlog.get_logger(__name__)
+from ingestion.actor_ids import AIRBNB_SCRAPER
 
-_ACTOR_ID = "tri_angle/airbnb-scraper"
+logger = structlog.get_logger(__name__)
 _MAX_ITEMS = 30   # fetch extra so 2σ filter still leaves enough
 
 _STR_VALIDATED_MIN   = 5   # comp_count threshold for str_validated=True
@@ -161,7 +161,7 @@ def _calc_revenue(
 
 def _run_actor(zip_code: str, bedrooms: int) -> list[dict]:
     """
-    Call the tri_angle/airbnb-scraper Apify actor and return raw listing dicts.
+    Call the AIRBNB_SCRAPER (see ingestion/actor_ids.py) Apify actor and return raw listing dicts.
     Returns empty list on any error — STR analysis uses default assumptions.
     """
     from ingestion.apify_client import ApifyClient, ApifyError
@@ -179,7 +179,7 @@ def _run_actor(zip_code: str, bedrooms: int) -> list[dict]:
 
     try:
         client = ApifyClient()
-        items  = client.run_actor(_ACTOR_ID, input_payload=actor_input, memory_mbytes=512)
+        items  = client.run_actor(AIRBNB_SCRAPER, input_payload=actor_input, memory_mbytes=512)
         logger.info("airbnb_actor_done", zip_code=zip_code, bedrooms=bedrooms, count=len(items))
         return items
     except ApifyError as exc:

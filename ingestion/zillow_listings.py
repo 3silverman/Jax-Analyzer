@@ -4,8 +4,6 @@ ingestion/zillow_listings.py
 Fetches Jacksonville for-sale multifamily AND SFH/ADU listings via the Apify Zillow actor,
 then normalizes them into canonical PropertyRecord objects.
 
-Actor: "lukaskrivka/zillow-scraper"
-
 Searches two listing types:
   1. Multifamily (duplex / triplex / quadplex) — primary house-hack targets
   2. Single-family (SFH + SFH with ADU) — included if described with ADU or guest house
@@ -17,6 +15,7 @@ from typing import Any
 
 import structlog
 
+from ingestion.actor_ids import ZILLOW_SCRAPER
 from ingestion.apify_client import ApifyClient
 from normalization.deduplication import deduplicate_property_records
 from normalization.normalizer import normalize_zillow_listing
@@ -93,7 +92,7 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
 
     # Fetch multifamily
     mf_raw = client.run_actor(
-        "lukaskrivka/zillow-scraper",
+        ZILLOW_SCRAPER,
         input_payload=_MF_ACTOR_INPUT,
         memory_mbytes=1024,
     )
@@ -103,7 +102,7 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
     sfh_raw: list = []
     try:
         sfh_raw = client.run_actor(
-            "lukaskrivka/zillow-scraper",
+            ZILLOW_SCRAPER,
             input_payload=_SFH_ACTOR_INPUT,
             memory_mbytes=512,
         )

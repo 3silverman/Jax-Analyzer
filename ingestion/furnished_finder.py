@@ -5,7 +5,6 @@ Fetches Jacksonville MTR (medium-term rental) comps from Furnished Finder
 via an Apify actor, then normalizes them into canonical RentalComp objects.
 
 These comps validate MTR rent assumptions in the underwriting module.
-Actor: "misceres/furnished-finder-scraper" (community actor)
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ from typing import Any
 
 import structlog
 
+from ingestion.actor_ids import FURNISHED_FINDER_SCRAPER
 from ingestion.apify_client import ApifyClient
 from normalization.deduplication import deduplicate_rental_comps
 from normalization.normalizer import normalize_furnished_finder
@@ -52,7 +52,7 @@ def fetch_mtr_comps(client: ApifyClient) -> list[RentalComp]:
     """
     logger.info("furnished_finder_fetch_start")
     raw_items = client.run_actor(
-        "misceres/furnished-finder-scraper",
+        FURNISHED_FINDER_SCRAPER,
         input_payload=_ACTOR_INPUT,
         memory_mbytes=512,
     )

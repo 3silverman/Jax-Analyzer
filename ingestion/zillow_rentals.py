@@ -4,7 +4,6 @@ ingestion/zillow_rentals.py
 Fetches Jacksonville rental listings via the Apify Zillow rental actor,
 then normalizes them into canonical RentalComp (LTR) objects.
 
-Actor: "lukaskrivka/zillow-scraper" with rental filter
 """
 
 from __future__ import annotations
@@ -13,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from ingestion.actor_ids import ZILLOW_SCRAPER
 from ingestion.apify_client import ApifyClient
 from normalization.deduplication import deduplicate_rental_comps
 from normalization.normalizer import normalize_zillow_rental
@@ -53,7 +53,7 @@ def fetch_rental_comps(client: ApifyClient) -> list[RentalComp]:
     """
     logger.info("zillow_rentals_fetch_start")
     raw_items = client.run_actor(
-        "lukaskrivka/zillow-scraper",
+        ZILLOW_SCRAPER,
         input_payload=_ACTOR_INPUT,
         memory_mbytes=1024,
     )

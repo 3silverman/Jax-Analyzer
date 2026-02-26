@@ -7,7 +7,6 @@ Pulls last 6 months of multifamily + SFH sold listings in the target zip code,
 computes a zip-level median sold price, and flags VA appraisal gap risk when
 the listing price exceeds the median by more than 15%.
 
-Actor: apify/redfin-scraper (or equivalent)
 Auth: APIFY_TOKEN env var
 """
 
@@ -21,9 +20,11 @@ from typing import Any
 
 import structlog
 
+from ingestion.actor_ids import REDFIN_SCRAPER
+
 logger = structlog.get_logger(__name__)
 
-_APIFY_URL = "https://api.apify.com/v2/acts/apify~redfin-scraper/runs"
+_APIFY_BASE = "https://api.apify.com/v2/acts"
 _SOLD_LOOKBACK_DAYS = 180  # 6 months
 
 
@@ -70,10 +71,11 @@ def get_zip_median_sold_price(
             "max_results": 100,
         }
 
+        actor_path = REDFIN_SCRAPER.replace("/", "~")
         headers = {"Authorization": f"Bearer {token}"}
         logger.info("redfin_sold_fetch", zip_code=zip_code)
         resp = httpx.post(
-            _APIFY_URL,
+            f"{_APIFY_BASE}/{actor_path}/runs",
             json={"runInput": input_data},
             headers=headers,
             timeout=60,
@@ -84,7 +86,7 @@ def get_zip_median_sold_price(
             raise ValueError("No run ID returned from Apify")
 
         # Poll for result (synchronous wait with timeout)
-        result_url = f"https://api.apify.com/v2/acts/apify~redfin-scraper/runs/{run_id}/dataset/items"
+        result_url = f"{_APIFY_BASE}/{actor_path}/runs/{run_id}/dataset/items"
         import time
         for _ in range(30):  # max 60 seconds
             time.sleep(2)
