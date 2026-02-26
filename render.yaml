@@ -1,0 +1,56 @@
+services:
+  # ── Web service (FastAPI app) ────────────────────────────────
+  - type: web
+    name: jax-analyzer
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    branch: main
+    envVars:
+      - key: APIFY_TOKEN
+        sync: false
+      - key: RENTCAST_API_KEY
+        sync: false
+      - key: WALKSCORE_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: DIGEST_EMAIL
+        sync: false
+      - key: APP_BASE_URL
+        sync: false   # e.g. https://jax-analyzer.onrender.com
+    healthCheckPath: /inbox
+
+  # ── Cron job: daily property scan at 6:00 AM ET ─────────────
+  - type: cron
+    name: jax-daily-scan
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    schedule: "0 11 * * *"    # 11:00 UTC = 6:00 AM ET (EST); adjust to 10:00 UTC for EDT
+    startCommand: python -m ingestion.run_scan
+    envVars:
+      - key: APIFY_TOKEN
+        sync: false
+      - key: RENTCAST_API_KEY
+        sync: false
+      - key: WALKSCORE_API_KEY
+        sync: false
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false

@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+{% block title_suffix %} — {{ deal.get('address', 'Deal Detail') }}{% endblock %}
+{% block content %}
+{% set score = deal.get('deal_score', 0) %}
+
+<!-- Header row -->
+<div style="display:flex;gap:16px;align-items:flex-start;margin-bottom:20px;flex-wrap:wrap">
+  <div>
+    <h2 style="font-size:22px;font-weight:800;margin-bottom:4px">{{ deal.get('address','—') }}</h2>
+    <div style="color:#718096">
+      {{ deal.get('property_type','') }} &middot; {{ deal.get('num_units','?') }} units &middot;
+      {{ deal.get('city','Jacksonville') }}, FL {{ deal.get('zip_code','') }} &middot;
+      {{ deal.get('days_on_market','?') }}d on market
+    </div>
+  </div>
+  <div style="margin-left:auto;text-align:right">
+    <div style="font-size:28px;font-weight:800;color:#1a2744">${{ "{:,.0f}".format(deal.get('price',0)) }}</div>
+    <div class="score-ring {{ 'score-85plus' if score >= 85 else ('score-60' if score >= 60 else ('score-40' if score >= 40 else 'score-low')) }}"
+         style="margin:8px 0 0 auto;width:56px;height:56px;font-size:18px">
+      {{ score }}
+    </div>
+    {% if deal.get('is_high_priority') %}
+    <span class="badge badge-alert" style="margin-top:4px">🔥 HIGH PRIORITY</span>
+    {% endif %}
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+
+<!-- Left column -->
+<div>
+
+  <!-- Street View -->
+  {% if deal.get('street_view_url') %}
+  <div class="card" style="padding:0;overflow:hidden;margin-bottom:20px">
+    <img src="{{ deal.street_view_url }}" alt="Street View" style="width:100%;height:220px;object-fit:cover">
+    <div style="padding:10px;display:flex;gap:10px">
+      {% if deal.get('satellite_url') %}
+      <a href="{{ deal.satellite_url }}" target="_blank" class="btn btn-outline btn-sm">🛰 Satellite View</a>
+      {% endif %}
+      {% if deal.get('maps_link') %}
+      <a href="{{ deal.maps_link }}" target="_blank" class="btn btn-outline btn-sm">📍 Google Maps</a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- VA Loan Snapshot -->
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">VA Loan Snapshot</h3>
+    <div class="card-grid" style="grid-template-columns:1fr 1fr">
+      <div><div class="stat-label">Purchase Price</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('price',0)) }}</div></div>
+      <div><div class="stat-label">Loan Amount</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('loan_amount',0)) }}</div></div>
+      <div><div class="stat-label">Funding Fee (2.15%)</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('funding_fee',0)) }}</div></div>
+      <div><div class="stat-label">Monthly P&amp;I</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('monthly_payment',0)) }}</div></div>
+      <div><div class="stat-label">Total PITI/mo</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('total_piti',0)) }}</div></div>
+      <div><div class="stat-label">Cash to Close</div><div class="stat-value">${{ "{:,.0f}".format(deal.get('cash_to_close',0)) }}</div></div>
+    </div>
+    {% if deal.get('refi_payment_55') %}
+    <div style="margin-top:12px;padding:10px;background:#f7fafc;border-radius:6px;font-size:12px;color:#4a5568">
+      Refi scenario at 5.5%: <strong>${{ "{:,.0f}".format(deal.get('refi_payment_55',0)) }}/mo P&amp;I</strong>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Neighborhood Scores -->
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Neighborhood</h3>
+    <div class="card-grid" style="grid-template-columns:1fr 1fr">
+      <div><div class="stat-label">Crime Grade</div>
+        <div class="stat-value">
+          <span class="badge {{ 'badge-good' if deal.get('crime_grade','') in ['A+','A','A-','B+','B','B-'] else 'badge-alert' }}">
+            {{ deal.get('crime_grade','—') }}
+          </span>
+        </div>
+      </div>
+      <div><div class="stat-label">Walk Score</div><div class="stat-value">{{ deal.get('walk_score','—') }}/100</div></div>
+      <div><div class="stat-label">Flood Zone</div>
+        <div class="stat-value">
+          <span class="badge {{ 'badge-alert' if deal.get('flood_high_risk') else 'badge-good' }}">
+            {{ deal.get('flood_zone','—') }}
+          </span>
+        </div>
+      </div>
+      <div><div class="stat-label">Hospital Distance</div>
+        <div class="stat-value">{{ "%.2f"|format(deal.get('hospital_dist_miles',0)) }} mi</div>
+        <div class="stat-sub">{{ deal.get('closest_hospital','') }}</div>
+      </div>
+    </div>
+    <div style="margin-top:10px;padding:8px 12px;background:#f7fafc;border-radius:4px">
+      <strong>Liveability Index: {{ deal.get('liveability_score','—') }}/100</strong>
+    </div>
+  </div>
+
+</div>
+
+<!-- Right column -->
+<div>
+
+  <!-- Strategy Rankings -->
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Strategy Rankings (Conservative Case)</h3>
+    {% for i, strategy in enumerate(deal.get('strategies', []), 1) %}
+    <div style="background:#f7fafc;border-radius:6px;padding:12px;margin-bottom:8px;border-left:3px solid {{ '#1a2744' if i==1 else '#cbd5e0' }}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-weight:700;font-size:13px">#{{ i }} {{ strategy.name }}</span>
+        <span style="font-weight:800;font-size:16px;color:{{ '#38a169' if strategy.cash_flow >= 500 else '#e53e3e' }}">
+          ${{ "{:,.0f}".format(strategy.cash_flow) }}/mo
+        </span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:6px;font-size:12px;color:#718096">
+        <span>DSCR {{ "%.2f"|format(strategy.dscr) }}</span>
+        <span>CoC {{ "%.1f"|format(strategy.coc * 100) }}%</span>
+        <span>NOI ${{ "{:,.0f}".format(strategy.noi) }}/yr</span>
+      </div>
+    </div>
+    {% else %}
+    <div style="color:#718096">No strategy data available.</div>
+    {% endfor %}
+  </div>
+
+  <!-- Stress Tests -->
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Stress Tests</h3>
+    <table style="font-size:12px">
+      <thead>
+        <tr>
+          <th>Scenario</th>
+          <th>Monthly CF</th>
+          <th>DSCR</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for stress in deal.get('stress_tests', []) %}
+        <tr>
+          <td>{{ stress.label }}</td>
+          <td style="color:{{ '#38a169' if stress.cash_flow >= 0 else '#e53e3e' }};font-weight:600">
+            ${{ "{:,.0f}".format(stress.cash_flow) }}
+          </td>
+          <td>{{ "%.2f"|format(stress.dscr) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" style="color:#718096">No stress test data.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Score Breakdown -->
+  <div class="card" style="margin-bottom:20px">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Score Breakdown</h3>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="flex:1;background:#e2e8f0;border-radius:4px;height:8px">
+        <div style="width:{{ (deal.get('return_score',0)/40*100)|int }}%;background:#1a2744;height:100%;border-radius:4px"></div>
+      </div>
+      <span style="font-size:12px;white-space:nowrap">Return: {{ deal.get('return_score','—') }}/40</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <div style="flex:1;background:#e2e8f0;border-radius:4px;height:8px">
+        <div style="width:{{ (deal.get('risk_score',0)/30*100)|int }}%;background:#38a169;height:100%;border-radius:4px"></div>
+      </div>
+      <span style="font-size:12px;white-space:nowrap">Risk: {{ deal.get('risk_score','—') }}/30</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <div style="flex:1;background:#e2e8f0;border-radius:4px;height:8px">
+        <div style="width:{{ (deal.get('confidence_score_pts',0)/30*100)|int }}%;background:#d69e2e;height:100%;border-radius:4px"></div>
+      </div>
+      <span style="font-size:12px;white-space:nowrap">Confidence: {{ deal.get('confidence_score_pts','—') }}/30</span>
+    </div>
+    {% if deal.get('why_scored_high') %}
+    <p style="font-size:13px;color:#4a5568;font-style:italic;line-height:1.5;padding:10px;background:#f7fafc;border-radius:6px">
+      {{ deal.why_scored_high }}
+    </p>
+    {% endif %}
+    {% if deal.get('risk_flags') %}
+    <div style="margin-top:10px">
+      <div style="font-size:11px;font-weight:700;color:#c53030;margin-bottom:6px;text-transform:uppercase">Risk Flags</div>
+      {% for flag in deal.risk_flags %}
+      <div style="font-size:12px;color:#c53030;margin-bottom:4px">⚠ {{ flag }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Outcome Tracking -->
+  <div class="card">
+    <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Track Outcome</h3>
+    <form action="/deal/{{ deal.get('canonical_id','') }}/outcome" method="post" style="display:flex;gap:8px">
+      <select name="outcome" style="flex:1">
+        <option value="">— Select outcome —</option>
+        <option value="pursued"    {{ 'selected' if deal.get('outcome') == 'pursued' }}>Pursued</option>
+        <option value="offer_made" {{ 'selected' if deal.get('outcome') == 'offer_made' }}>Offer Made</option>
+        <option value="closed"     {{ 'selected' if deal.get('outcome') == 'closed' }}>Closed</option>
+        <option value="rejected"   {{ 'selected' if deal.get('outcome') == 'rejected' }}>Rejected</option>
+      </select>
+      <button class="btn btn-primary">Save</button>
+    </form>
+  </div>
+
+</div>
+</div>
+{% endblock %}

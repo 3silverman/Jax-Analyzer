@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Inbox{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h2 style="font-size:20px;font-weight:700">Inbox
+    <span class="badge badge-good" style="margin-left:8px">{{ deals|length }} deals</span>
+  </h2>
+  {% set alert_deals = deals|selectattr('is_high_priority', 'equalto', true)|list %}
+  {% if alert_deals %}
+  <span class="badge badge-alert">🔥 {{ alert_deals|length }} HIGH PRIORITY</span>
+  {% endif %}
+</div>
+
+{% if not deals %}
+<div class="empty-state">
+  <h3>No deals yet</h3>
+  <p>Click "Run Scan" to fetch and analyze properties.</p>
+</div>
+{% else %}
+{% for deal in deals %}
+{% set score = deal.get('deal_score', 0) %}
+<div class="card" style="border-left:4px solid {{ '#e53e3e' if deal.get('is_high_priority') else ('#38a169' if score >= 60 else ('#d69e2e' if score >= 40 else '#718096')) }}">
+  <div style="display:flex;gap:16px;align-items:flex-start">
+
+    {% if deal.get('street_view_url') %}
+    <img src="{{ deal.street_view_url }}" alt="Street View" class="street-view-thumb">
+    {% endif %}
+
+    <div style="flex:1">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <!-- Score ring -->
+        <div class="score-ring {{ 'score-85plus' if score >= 85 else ('score-60' if score >= 60 else ('score-40' if score >= 40 else 'score-low')) }}">
+          {{ score }}
+        </div>
+        <div>
+          <div style="font-size:16px;font-weight:700">
+            <a href="/deal/{{ deal.get('canonical_id','') }}" style="color:#1a2744;text-decoration:none">
+              {{ deal.get('address','Unknown address') }}
+            </a>
+          </div>
+          <div style="color:#718096;font-size:12px">
+            {{ deal.get('property_type','') }} &middot; {{ deal.get('num_units','?') }} units &middot; {{ deal.get('zip_code','') }}
+          </div>
+        </div>
+        {% if deal.get('is_high_priority') %}
+        <span class="badge badge-alert">🔥 HIGH PRIORITY</span>
+        {% endif %}
+        <span style="margin-left:auto;font-size:20px;font-weight:800;color:#1a2744">
+          ${{ "{:,.0f}".format(deal.get('price', 0)) }}
+        </span>
+      </div>
+
+      <!-- Strategy highlights -->
+      <div class="card-grid">
+        {% for strategy in deal.get('strategies', [])[:3] %}
+        <div style="background:#f7fafc;border-radius:6px;padding:10px">
+          <div class="stat-label">{{ strategy.name }} strategy</div>
+          <div class="stat-value" style="font-size:15px;color:{{ '#38a169' if strategy.cash_flow >= 500 else '#e53e3e' }}">
+            ${{ "{:,.0f}".format(strategy.cash_flow) }}/mo
+          </div>
+          <div class="stat-sub">DSCR {{ "%.2f"|format(strategy.dscr) }}</div>
+        </div>
+        {% else %}
+        <div style="background:#f7fafc;border-radius:6px;padding:10px;color:#718096">
+          No strategy data
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Neighborhood pills -->
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+        {% if deal.get('crime_grade') %}
+        <span class="pill {{ 'pill-green' if deal.crime_grade in ['A+','A','A-','B+','B','B-'] else 'pill-red' }}">
+          Crime {{ deal.crime_grade }}
+        </span>
+        {% endif %}
+        {% if deal.get('walk_score') is not none %}
+        <span class="pill">Walk {{ deal.walk_score }}</span>
+        {% endif %}
+        {% if deal.get('flood_zone') %}
+        <span class="pill {{ 'pill-red' if deal.get('flood_high_risk') else 'pill-green' }}">
+          Flood {{ deal.flood_zone }}
+        </span>
+        {% endif %}
+        {% if deal.get('days_on_market') is not none %}
+        <span class="pill">{{ deal.days_on_market }}d on market</span>
+        {% endif %}
+      </div>
+
+      <!-- Why scored high -->
+      {% if deal.get('why_scored_high') %}
+      <p style="margin-top:10px;font-size:13px;color:#4a5568;font-style:italic;line-height:1.5">
+        {{ deal.why_scored_high }}
+      </p>
+      {% endif %}
+
+      <!-- Score breakdown -->
+      <div style="margin-top:10px;display:flex;gap:16px;font-size:12px;color:#718096">
+        <span>Return: <strong>{{ deal.get('return_score', '—') }}/40</strong></span>
+        <span>Risk: <strong>{{ deal.get('risk_score', '—') }}/30</strong></span>
+        <span>Confidence: <strong>{{ deal.get('confidence_score_pts', '—') }}/30</strong></span>
+        {% if deal.get('satellite_url') %}
+        <a href="{{ deal.satellite_url }}" target="_blank" style="margin-left:auto;color:#4299e1">🛰 Satellite</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

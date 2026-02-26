@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Rejected{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h2 style="font-size:20px;font-weight:700">Failed Gates
+    <span class="badge badge-low" style="margin-left:8px">{{ properties|length }}</span>
+  </h2>
+</div>
+
+{% if not properties %}
+<div class="empty-state">
+  <h3>No rejected properties</h3>
+  <p>All analyzed properties passed the hard gates, or no scan has run yet.</p>
+</div>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden">
+<table>
+  <thead>
+    <tr>
+      <th>Address</th>
+      <th>Price</th>
+      <th>Zip</th>
+      <th>Crime Grade</th>
+      <th>Flood Zone</th>
+      <th>Gate Failures</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for prop in properties %}
+    <tr>
+      <td>
+        <div style="font-weight:600">{{ prop.get('address', '—') }}</div>
+        <div style="font-size:11px;color:#718096">{{ prop.get('property_type', '') }} · {{ prop.get('num_units', '?') }} units</div>
+      </td>
+      <td>${{ "{:,.0f}".format(prop.get('price', 0)) }}</td>
+      <td>{{ prop.get('zip_code', '—') }}</td>
+      <td>
+        {% set g = prop.get('crime_grade', '—') %}
+        <span class="badge {{ 'badge-good' if g in ['A+','A','A-','B+','B','B-'] else ('badge-alert' if g != '—' else 'badge-low') }}">{{ g }}</span>
+      </td>
+      <td>
+        {% set fz = prop.get('flood_zone', '—') %}
+        <span class="badge {{ 'badge-alert' if prop.get('flood_high_risk') else 'badge-good' }}">{{ fz }}</span>
+      </td>
+      <td>
+        {% for reason in prop.get('failed_gates', []) %}
+        <div style="color:#c53030;font-size:12px;margin-bottom:4px">✗ {{ reason }}</div>
+        {% else %}
+        <span style="color:#718096">—</span>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

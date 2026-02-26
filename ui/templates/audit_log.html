@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Audit Log{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h2 style="font-size:20px;font-weight:700">Audit Log</h2>
+</div>
+
+{% if not logs %}
+<div class="empty-state">
+  <h3>No scan history</h3>
+  <p>Run a scan to start tracking history.</p>
+</div>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden">
+<table>
+  <thead>
+    <tr>
+      <th>Timestamp</th>
+      <th>Listings Found</th>
+      <th>LTR Comps</th>
+      <th>MTR Comps</th>
+      <th>Status</th>
+      <th>Errors</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for log in logs | reverse %}
+    <tr>
+      <td style="white-space:nowrap;font-size:12px">{{ log.get('scanned_at','—') }}</td>
+      <td><strong>{{ log.get('listings', 0) }}</strong></td>
+      <td>{{ log.get('ltr_comps', 0) }}</td>
+      <td>{{ log.get('mtr_comps', 0) }}</td>
+      <td>
+        {% if log.get('errors') %}
+        <span class="badge badge-alert">Errors</span>
+        {% else %}
+        <span class="badge badge-good">OK</span>
+        {% endif %}
+      </td>
+      <td>
+        {% for err in log.get('errors', []) %}
+        <div style="color:#c53030;font-size:11px;margin-bottom:2px">{{ err }}</div>
+        {% else %}
+        <span style="color:#718096">—</span>
+        {% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Shortlist{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+  <h2 style="font-size:20px;font-weight:700">Shortlist
+    <span class="badge badge-good" style="margin-left:8px">{{ deals|length }}</span>
+  </h2>
+</div>
+
+{% if not deals %}
+<div class="empty-state">
+  <h3>No shortlisted deals</h3>
+  <p>Mark deals as "Pursued" from the deal detail page to add them here.</p>
+</div>
+{% else %}
+<div class="card" style="padding:0;overflow:hidden">
+<table>
+  <thead>
+    <tr>
+      <th>Address</th>
+      <th>Price</th>
+      <th>Score</th>
+      <th>Top Strategy</th>
+      <th>Cash Flow</th>
+      <th>Outcome</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for deal in deals %}
+    <tr>
+      <td>
+        <div style="font-weight:600">
+          <a href="/deal/{{ deal.get('canonical_id','') }}" style="color:#1a2744;text-decoration:none">
+            {{ deal.get('address','—') }}
+          </a>
+        </div>
+        <div style="font-size:11px;color:#718096">{{ deal.get('zip_code','') }}</div>
+      </td>
+      <td>${{ "{:,.0f}".format(deal.get('price', 0)) }}</td>
+      <td>
+        {% set score = deal.get('deal_score', 0) %}
+        <div class="score-ring {{ 'score-85plus' if score >= 85 else ('score-60' if score >= 60 else 'score-40') }}" style="width:36px;height:36px;font-size:13px">
+          {{ score }}
+        </div>
+      </td>
+      <td>{{ deal.get('top_strategy', '—') }}</td>
+      <td style="color:{{ '#38a169' if deal.get('top_cash_flow', 0) >= 500 else '#e53e3e' }};font-weight:600">
+        ${{ "{:,.0f}".format(deal.get('top_cash_flow', 0)) }}/mo
+      </td>
+      <td>
+        {% set outcome = deal.get('outcome', '') %}
+        {% if outcome %}
+        <span class="badge {{ 'badge-good' if outcome == 'closed' else ('badge-ok' if outcome in ['pursued','offer_made'] else 'badge-low') }}">
+          {{ outcome | replace('_', ' ') | title }}
+        </span>
+        {% else %}
+        <span style="color:#718096">Pending</span>
+        {% endif %}
+      </td>
+      <td>
+        <form action="/deal/{{ deal.get('canonical_id','') }}/outcome" method="post" style="display:flex;gap:6px">
+          <select name="outcome" style="width:130px">
+            <option value="pursued" {{ 'selected' if deal.get('outcome') == 'pursued' }}>Pursued</option>
+            <option value="offer_made" {{ 'selected' if deal.get('outcome') == 'offer_made' }}>Offer Made</option>
+            <option value="closed" {{ 'selected' if deal.get('outcome') == 'closed' }}>Closed</option>
+            <option value="rejected" {{ 'selected' if deal.get('outcome') == 'rejected' }}>Rejected</option>
+          </select>
+          <button class="btn btn-sm btn-primary">Save</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Assumptions{% endblock %}
+{% block content %}
+<div style="max-width:600px">
+<h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Underwriting Assumptions</h2>
+<p style="color:#718096;margin-bottom:20px;font-size:13px">
+  Changing these values triggers an instant recalculation of all deal scores.
+  All rates are percentages (e.g. enter 7.5 for 7.5%).
+</p>
+
+<form action="/assumptions" method="post">
+<div class="card">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Loan Parameters</h3>
+  <label>Interest Rate (%)</label>
+  <input type="number" name="interest_rate" value="{{ assumptions.interest_rate }}" step="0.125" min="0" max="20">
+
+  <label>Annual Insurance (% of purchase price)</label>
+  <input type="number" name="insurance_pct" value="{{ assumptions.insurance_pct }}" step="0.05" min="0" max="5">
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Vacancy Rates</h3>
+  <label>LTR Vacancy (%)</label>
+  <input type="number" name="ltr_vacancy" value="{{ assumptions.ltr_vacancy }}" step="1" min="0" max="50">
+
+  <label>MTR Vacancy (%)</label>
+  <input type="number" name="mtr_vacancy" value="{{ assumptions.mtr_vacancy }}" step="1" min="0" max="50">
+
+  <label>STR Vacancy (%)</label>
+  <input type="number" name="str_vacancy" value="{{ assumptions.str_vacancy }}" step="1" min="0" max="50">
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Operating Expenses</h3>
+  <label>Property Management Rate (%)</label>
+  <input type="number" name="mgmt_rate" value="{{ assumptions.mgmt_rate }}" step="0.5" min="0" max="20">
+
+  <label>CapEx Reserve (% of value/year)</label>
+  <input type="number" name="capex_rate" value="{{ assumptions.capex_rate }}" step="0.1" min="0" max="5">
+
+  <label>Maintenance Reserve (% of value/year)</label>
+  <input type="number" name="maintenance_rate" value="{{ assumptions.maintenance_rate }}" step="0.1" min="0" max="5">
+</div>
+
+<div style="margin-top:20px;display:flex;gap:12px">
+  <button type="submit" class="btn btn-primary">Save &amp; Recalculate</button>
+  <a href="/assumptions" class="btn btn-outline">Reset</a>
+</div>
+</form>
+</div>
+{% endblock %}

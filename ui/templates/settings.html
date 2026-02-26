@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title_suffix %} — Settings{% endblock %}
+{% block content %}
+<div style="max-width:600px">
+<h2 style="font-size:20px;font-weight:700;margin-bottom:20px">Settings</h2>
+
+<form action="/settings" method="post">
+<div class="card">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Zip Code Whitelist</h3>
+  <p style="font-size:12px;color:#718096;margin-bottom:8px">
+    Comma-separated list of target zip codes. Properties outside these zips are automatically rejected.
+  </p>
+  <label>Target Zip Codes</label>
+  <input type="text" name="zip_whitelist"
+         value="{{ settings.zip_whitelist | join(', ') }}"
+         placeholder="32204, 32205, 32206, 32207, 32210, 32211, 32217">
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Alert Threshold</h3>
+  <p style="font-size:12px;color:#718096;margin-bottom:8px">
+    Properties scoring at or above this threshold trigger an immediate email alert.
+  </p>
+  <label>Minimum Deal Score for Alert (0–100)</label>
+  <input type="number" name="alert_threshold"
+         value="{{ settings.alert_threshold }}" min="0" max="100" step="1">
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3 style="font-size:14px;font-weight:700;margin-bottom:12px;color:#1a2744">Email Delivery</h3>
+  <label>Digest Email Address</label>
+  <input type="email" name="digest_email"
+         value="{{ settings.digest_email }}"
+         placeholder="you@example.com">
+  <p style="font-size:11px;color:#718096;margin-top:6px">
+    Daily digest sent at 7:00 AM ET. Configure SMTP credentials in your .env file.
+  </p>
+</div>
+
+<div style="margin-top:20px">
+  <button type="submit" class="btn btn-primary">Save Settings</button>
+</div>
+</form>
+</div>
+{% endblock %}
