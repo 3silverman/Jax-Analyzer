@@ -3,14 +3,15 @@ ingestion/va_rates.py
 
 Fetches and caches the current VA 30-year fixed mortgage rate.
 
-Primary source: FRED (FreddieMac PMMS weekly 30-year fixed, no API key required)
-  URL: https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US
-  Returns CSV rows: date,value (e.g. "2025-01-02,6.91")
+Primary source: CFPB Mortgage Trends API (no API key required)
+  URL: https://www.consumerfinance.gov/api/trends/mortgage/30-year-fixed/
+  Returns JSON: {"data": [{"date": "YYYY-MM-DD", "rate": 6.91}, ...]}
+  Most recent entry is last in the array.
 
 Fallback chain:
-  1. FRED weekly PMMS data (free, no key)
+  1. CFPB Mortgage Trends API (free, no key)
   2. Last in-memory cached rate (from previous successful fetch this session)
-  3. Hardcoded 7.50% — flagged as stale if > 48 h since last successful fetch
+  3. Hardcoded 6.75% — flagged as stale if > 48 h since last successful fetch
 
 Note: VA rates typically run 0.25–0.50% below conventional 30-year fixed.
 This module returns the PMMS rate as-is; the Assumptions UI lets users override.
@@ -21,8 +22,8 @@ startup and store the result in the assumptions table.
 
 from __future__ import annotations
 
-import csv
 import io
+import json
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -34,9 +35,9 @@ logger = structlog.get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_FALLBACK_RATE: float = 0.075          # 7.50% — used when FRED unreachable and no cache
-_FRED_URL = (
-    "https://fred.stlouisfed.org/graph/fredgraph.csv?id=MORTGAGE30US"
+_FALLBACK_RATE: float = 0.0675         # 6.75% — used when CFPB unreachable and no cache
+_CFPB_URL = (
+    "https://www.consumerfinance.gov/api/trends/mortgage/30-year-fixed/"
 )
 _STALE_HOURS: float = 48.0             # rate flagged stale after this many hours
 
@@ -47,7 +48,7 @@ _STALE_HOURS: float = 48.0             # rate flagged stale after this many hour
 class VARate:
     rate:        float     # decimal (e.g. 0.0691 for 6.91%)
     fetched_at:  datetime  # UTC timestamp of last successful or fallback fetch
-    source:      str       # "fred" | "cache" | "fallback"
+    source:      str       # "cfpb" | "cache" | "fallback"
     is_fallback: bool      # True if using hardcoded default (no live data ever)
     is_stale:    bool      # True if fetched_at > 48 h ago
 
@@ -59,34 +60,52 @@ _cache: Optional[VARate] = None
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _fetch_fred_rate() -> float | None:
+def _fetch_cfpb_rate() -> float | None:
     """
-    Fetch the latest weekly 30-year fixed rate from FRED CSV.
+    Fetch the latest 30-year fixed rate from the CFPB Mortgage Trends API.
+
+    Expected response shape:
+        {"data": [{"date": "YYYY-MM-DD", "rate": 6.91}, ...]}
+    The most recent entry is last in the array. "rate" may be a float or string.
 
     Returns the rate as a decimal (e.g. 0.0691), or None on any failure.
     """
     try:
         req = urllib.request.Request(
-            _FRED_URL,
+            _CFPB_URL,
             headers={"User-Agent": "jax-analyzer/1.0 (VA loan real estate analysis)"},
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             content = resp.read().decode("utf-8")
 
-        reader = csv.reader(io.StringIO(content))
-        rows = list(reader)
+        payload = json.loads(content)
 
-        # Walk backwards to find the last row with a valid numeric value
-        for row in reversed(rows):
-            if len(row) == 2 and row[1].strip() and row[1].strip() != ".":
-                try:
-                    return float(row[1]) / 100.0   # percent → decimal
-                except ValueError:
-                    continue
+        # Normalise: accept top-level list or {"data": [...]}
+        if isinstance(payload, list):
+            entries = payload
+        elif isinstance(payload, dict):
+            entries = payload.get("data") or payload.get("rates") or []
+        else:
+            return None
+
+        # Walk backwards to find the last entry with a valid numeric rate
+        for entry in reversed(entries):
+            if not isinstance(entry, dict):
+                continue
+            raw = entry.get("rate") or entry.get("value")
+            if raw is None:
+                continue
+            try:
+                rate = float(raw)
+                if rate > 0:
+                    return rate / 100.0    # percent → decimal
+            except (ValueError, TypeError):
+                continue
+
         return None
 
     except Exception as exc:
-        logger.warning("fred_fetch_error", error=str(exc))
+        logger.warning("cfpb_fetch_error", error=str(exc))
         return None
 
 
@@ -106,10 +125,10 @@ def fetch_va_rate(force_refresh: bool = False) -> VARate:
     Get the current VA 30-year fixed rate.
 
     Uses an in-memory daily cache to avoid redundant HTTP requests.
-    Falls back to the last cached rate or hardcoded default if FRED is unreachable.
+    Falls back to the last cached rate or hardcoded default if CFPB is unreachable.
 
     Args:
-        force_refresh: Bypass cache and always attempt a fresh FRED fetch.
+        force_refresh: Bypass cache and always attempt a fresh CFPB fetch.
 
     Returns:
         VARate dataclass with rate, source, and freshness metadata.
@@ -128,15 +147,15 @@ def fetch_va_rate(force_refresh: bool = False) -> VARate:
             is_stale=stale,
         )
 
-    # Attempt FRED fetch
-    rate = _fetch_fred_rate()
+    # Attempt CFPB fetch
+    rate = _fetch_cfpb_rate()
 
     if rate is not None:
-        logger.info("va_rate_fetched", rate_pct=f"{rate:.3%}", source="fred")
+        logger.info("va_rate_fetched", rate_pct=f"{rate:.3%}", source="cfpb")
         result = VARate(
             rate=rate,
             fetched_at=now,
-            source="fred",
+            source="cfpb",
             is_fallback=False,
             is_stale=False,
         )
@@ -144,7 +163,7 @@ def fetch_va_rate(force_refresh: bool = False) -> VARate:
         # Degrade to previous cache value, or hardcoded fallback
         if _cache is not None:
             logger.warning(
-                "va_rate_fred_unavailable",
+                "va_rate_cfpb_unavailable",
                 using="cached",
                 cached_rate_pct=f"{_cache.rate:.3%}",
             )
@@ -157,7 +176,7 @@ def fetch_va_rate(force_refresh: bool = False) -> VARate:
             )
         else:
             logger.warning(
-                "va_rate_fred_unavailable",
+                "va_rate_cfpb_unavailable",
                 using="hardcoded_fallback",
                 fallback_rate_pct=f"{_FALLBACK_RATE:.3%}",
             )
@@ -176,7 +195,7 @@ def fetch_va_rate(force_refresh: bool = False) -> VARate:
 def get_cached_rate() -> float:
     """
     Return the cached rate as a decimal without triggering a network call.
-    Returns the hardcoded fallback (0.075) if no cache exists yet.
+    Returns the hardcoded fallback (0.0675) if no cache exists yet.
     """
     return _cache.rate if _cache is not None else _FALLBACK_RATE
 

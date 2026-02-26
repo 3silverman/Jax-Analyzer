@@ -221,9 +221,9 @@ print()
 # VA Rate banner
 rate_color = GREEN if not va_rate.is_stale and not va_rate.is_fallback else YEL
 rate_label = {
-    "fred": "LIVE (FRED/PMMS)",
+    "cfpb": "LIVE (CFPB Mortgage Trends)",
     "cache": "CACHED",
-    "fallback": "FALLBACK — hardcoded 7.50%",
+    "fallback": "FALLBACK — hardcoded 6.75%",
 }.get(va_rate.source, va_rate.source.upper())
 print(c("  VA RATE", BOLD))
 print(f"  {c(f'{va_rate.rate:.3%}', rate_color)}  [{rate_label}]", end="")
@@ -356,7 +356,7 @@ SPRINGFIELD_ADU = PropertyRecord(
     lat            = 30.3378,
     lon            = -81.6502,
     price          = 355_000.0,
-    beds           = 4,
+    beds           = 2,          # 2 units × 1BR each (main house unit + ADU unit)
     baths          = 2.0,
     sqft           = 1_800.0,
     year_built     = 1942,
@@ -379,20 +379,42 @@ liveability2 = compute_liveability(
 gate_result2 = evaluate_gates(SPRINGFIELD_ADU, crime2, flood2)
 sv_urls2 = get_street_view_urls(SPRINGFIELD_ADU.lat, SPRINGFIELD_ADU.lon, SPRINGFIELD_ADU.address)
 
-# Comps — 2BR LTR and MTR comps in 32206
+# Comps — 1BR units in 32206 matching beds_pu=1 (2 beds / 2 units = 1BR per unit)
+# _make_comp hardcodes zip 32204; override with a lambda scoped to 32206.
+def _make_comp_32206(strategy: RentalStrategy, monthly_rate: float, beds: int) -> RentalComp:
+    return RentalComp(
+        canonical_id    = make_canonical_id(f"comp2-{strategy}-{beds}-{monthly_rate}", "32206"),
+        source          = DataSource.ZILLOW_RENTAL,
+        source_id       = f"smoke_comp2_{strategy}_{beds}",
+        scraped_at      = SPRINGFIELD_ADU.scraped_at,
+        address         = f"Comp2 {strategy} Unit",
+        city            = "Jacksonville",
+        state           = "FL",
+        zip_code        = "32206",
+        lat             = 30.3380,
+        lon             = -81.6505,
+        beds            = beds,
+        baths           = 1.0,
+        sqft            = 700.0,
+        rental_strategy = strategy,
+        monthly_rate    = monthly_rate,
+        adr             = None,
+        utilities_included = False,
+    )
+
 ltr_comps2 = [
-    _make_comp(RentalStrategy.LTR, 1_000.0, 2),
-    _make_comp(RentalStrategy.LTR, 1_050.0, 2),
-    _make_comp(RentalStrategy.LTR, 1_075.0, 2),
-    _make_comp(RentalStrategy.LTR, 1_100.0, 2),
-    _make_comp(RentalStrategy.LTR, 1_125.0, 2),
+    _make_comp_32206(RentalStrategy.LTR, 900.0, 1),
+    _make_comp_32206(RentalStrategy.LTR, 925.0, 1),
+    _make_comp_32206(RentalStrategy.LTR, 950.0, 1),
+    _make_comp_32206(RentalStrategy.LTR, 975.0, 1),
+    _make_comp_32206(RentalStrategy.LTR, 1_000.0, 1),
 ]
 mtr_comps2 = [
-    _make_comp(RentalStrategy.MTR, 1_600.0, 2),
-    _make_comp(RentalStrategy.MTR, 1_700.0, 2),
-    _make_comp(RentalStrategy.MTR, 1_750.0, 2),
-    _make_comp(RentalStrategy.MTR, 1_800.0, 2),
-    _make_comp(RentalStrategy.MTR, 1_850.0, 2),
+    _make_comp_32206(RentalStrategy.MTR, 1_400.0, 1),
+    _make_comp_32206(RentalStrategy.MTR, 1_500.0, 1),
+    _make_comp_32206(RentalStrategy.MTR, 1_550.0, 1),
+    _make_comp_32206(RentalStrategy.MTR, 1_600.0, 1),
+    _make_comp_32206(RentalStrategy.MTR, 1_650.0, 1),
 ]
 all_comps2  = ltr_comps2 + mtr_comps2
 comps_count2 = len(all_comps2)
