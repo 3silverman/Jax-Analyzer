@@ -8,7 +8,7 @@ Lists all deals scoring 60+ with address, top strategy, cash flow,
 Deal Score, and deal detail link.
 
 Env vars:
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, DIGEST_EMAIL
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, DIGEST_RECIPIENT_EMAIL
 """
 
 from __future__ import annotations
@@ -46,10 +46,10 @@ def send_digest(
 
     Args:
         all_deals:  Full list of deal dicts from the latest scan.
-        recipient:  Recipient email address. Falls back to DIGEST_EMAIL env var.
+        recipient:  Recipient email address. Falls back to DIGEST_RECIPIENT_EMAIL env var.
         base_url:   App base URL for deal links (e.g. https://jax-analyzer.onrender.com).
     """
-    recipient = recipient or os.environ.get("DIGEST_EMAIL", "")
+    recipient = recipient or os.environ.get("DIGEST_RECIPIENT_EMAIL", "")
     if not recipient:
         logger.info("digest_skip_no_recipient")
         return

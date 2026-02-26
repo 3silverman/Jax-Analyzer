@@ -8,7 +8,7 @@ Sends a full deal summary with why it scored high, all strategy cash flows,
 VA loan snapshot, Street View link, and a link to the deal detail page.
 
 Env vars:
-    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, DIGEST_EMAIL
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, DIGEST_RECIPIENT_EMAIL
 """
 
 from __future__ import annotations
@@ -34,10 +34,10 @@ def send_alert(
 
     Args:
         deal:       Deal dict with all scoring and property fields.
-        recipient:  Recipient email. Falls back to DIGEST_EMAIL env var.
+        recipient:  Recipient email. Falls back to DIGEST_RECIPIENT_EMAIL env var.
         base_url:   App base URL for deal links.
     """
-    recipient = recipient or os.environ.get("DIGEST_EMAIL", "")
+    recipient = recipient or os.environ.get("DIGEST_RECIPIENT_EMAIL", "")
     smtp_user = os.environ.get("SMTP_USER", "")
     smtp_pass = os.environ.get("SMTP_PASSWORD", "")
 

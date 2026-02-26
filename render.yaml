@@ -28,7 +28,7 @@ services:
         sync: false
       - key: SMTP_PASSWORD
         sync: false
-      - key: DIGEST_EMAIL
+      - key: DIGEST_RECIPIENT_EMAIL
         sync: false
       - key: APP_BASE_URL
         sync: false   # e.g. https://jax-analyzer.onrender.com
