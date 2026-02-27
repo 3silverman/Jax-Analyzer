@@ -133,38 +133,66 @@ def _now_utc() -> datetime:
 # Zillow for-sale listings  (Apify actor output)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _zillow_info(raw: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return the hdpData.homeInfo sub-dict from a maxcopell~zillow-zip-search item.
+    Falls back to empty dict so callers can use .get() safely.
+    """
+    return (raw.get("hdpData") or {}).get("homeInfo") or {}
+
+
 def normalize_zillow_listing(raw: dict[str, Any]) -> PropertyRecord:
     """
     Normalize a single Zillow for-sale listing from the Apify actor payload.
 
-    Apify actor: "lukaskrivka/zillow-scraper"
-    Key fields: zpid, price, streetAddress, zipcode, bedrooms, bathrooms,
-                livingArea, yearBuilt, homeType, daysOnMarket, latitude, longitude
+    Apify actor: maxcopell~zillow-zip-search
+    Top-level fields used: zpid, addressStreet, addressZipcode, addressCity,
+        addressState, beds, baths, area, unformattedPrice, latLong{latitude,longitude}
+    hdpData.homeInfo fields used: homeType, livingArea, bedrooms, bathrooms,
+        yearBuilt, daysOnZillow, lotAreaValue, price
     """
-    address = str(raw.get("streetAddress") or raw.get("address") or "")
-    zip_code = str(raw.get("zipcode") or raw.get("zip_code") or "").strip()[:5]
+    info = _zillow_info(raw)
 
-    property_type = _infer_property_type(raw)
+    address = str(
+        raw.get("addressStreet") or
+        info.get("streetAddress") or
+        raw.get("streetAddress") or
+        raw.get("address") or ""
+    )
+    zip_code = str(
+        raw.get("addressZipcode") or
+        info.get("zipcode") or
+        raw.get("zipcode") or
+        raw.get("zip_code") or ""
+    ).strip()[:5]
+
+    lat_long: dict = raw.get("latLong") or {}
+    lat = _to_float(lat_long.get("latitude") or info.get("latitude") or raw.get("latitude"))
+    lon = _to_float(lat_long.get("longitude") or info.get("longitude") or raw.get("longitude"))
+
+    # Merge info into raw for helpers that inspect homeType, daysOnZillow, etc.
+    merged = {**raw, **info}
+    property_type = _infer_property_type(merged)
 
     record = PropertyRecord(
-        canonical_id = make_canonical_id(address, zip_code),
-        source       = DataSource.ZILLOW_SALE,
-        source_id    = str(raw.get("zpid") or raw.get("id") or ""),
-        scraped_at   = _now_utc(),
-        address      = address,
-        zip_code     = zip_code,
-        lat          = _to_float(raw.get("latitude") or raw.get("lat")),
-        lon          = _to_float(raw.get("longitude") or raw.get("lng") or raw.get("lon")),
-        price        = _clean_price(raw.get("price")) or 0.0,
-        beds         = _to_int(raw.get("bedrooms") or raw.get("beds")),
-        baths        = _to_float(raw.get("bathrooms") or raw.get("baths")),
-        sqft         = _to_float(raw.get("livingArea") or raw.get("sqft")),
-        year_built   = _to_int(raw.get("yearBuilt") or raw.get("year_built")),
-        property_type = property_type,
-        num_units    = _infer_units(property_type, raw),
-        lot_size_sqft = _to_float(raw.get("lotAreaValue") or raw.get("lot_size_sqft")),
-        days_on_market = _parse_dom(raw),
-        raw          = raw,
+        canonical_id   = make_canonical_id(address, zip_code),
+        source         = DataSource.ZILLOW_SALE,
+        source_id      = str(raw.get("zpid") or raw.get("id") or ""),
+        scraped_at     = _now_utc(),
+        address        = address,
+        zip_code       = zip_code,
+        lat            = lat,
+        lon            = lon,
+        price          = _clean_price(raw.get("unformattedPrice") or info.get("price") or raw.get("price")) or 0.0,
+        beds           = _to_int(raw.get("beds") or info.get("bedrooms") or raw.get("bedrooms")),
+        baths          = _to_float(raw.get("baths") or info.get("bathrooms") or raw.get("bathrooms")),
+        sqft           = _to_float(raw.get("area") or info.get("livingArea") or raw.get("livingArea")),
+        year_built     = _to_int(info.get("yearBuilt") or raw.get("yearBuilt") or raw.get("year_built")),
+        property_type  = property_type,
+        num_units      = _infer_units(property_type, merged),
+        lot_size_sqft  = _to_float(info.get("lotAreaValue") or raw.get("lotAreaValue") or raw.get("lot_size_sqft")),
+        days_on_market = _parse_dom(merged),
+        raw            = raw,
     )
     return annotate(record)
 
@@ -178,28 +206,45 @@ def normalize_zillow_rental(raw: dict[str, Any]) -> RentalComp:
     Normalize a Zillow rental listing from the Apify actor payload.
     These become LTR comps used to validate rent assumptions.
 
-    Key fields: zpid, price (monthly rent), streetAddress, zipcode, bedrooms,
-                bathrooms, livingArea, latitude, longitude
+    Apify actor: maxcopell~zillow-zip-search (forRent=True)
+    Same field layout as for-sale: top-level addressStreet/addressZipcode/latLong,
+    rich data in hdpData.homeInfo.
     """
-    address  = str(raw.get("streetAddress") or raw.get("address") or "")
-    zip_code = str(raw.get("zipcode") or raw.get("zip_code") or "").strip()[:5]
+    info = _zillow_info(raw)
+
+    address  = str(
+        raw.get("addressStreet") or
+        info.get("streetAddress") or
+        raw.get("streetAddress") or
+        raw.get("address") or ""
+    )
+    zip_code = str(
+        raw.get("addressZipcode") or
+        info.get("zipcode") or
+        raw.get("zipcode") or
+        raw.get("zip_code") or ""
+    ).strip()[:5]
+
+    lat_long: dict = raw.get("latLong") or {}
+    lat = _to_float(lat_long.get("latitude") or info.get("latitude") or raw.get("latitude"))
+    lon = _to_float(lat_long.get("longitude") or info.get("longitude") or raw.get("longitude"))
 
     return RentalComp(
-        canonical_id     = make_canonical_id(address, zip_code),
-        source           = DataSource.ZILLOW_RENTAL,
-        source_id        = str(raw.get("zpid") or raw.get("id") or ""),
-        scraped_at       = _now_utc(),
-        address          = address,
-        zip_code         = zip_code,
-        lat              = _to_float(raw.get("latitude") or raw.get("lat")),
-        lon              = _to_float(raw.get("longitude") or raw.get("lng") or raw.get("lon")),
-        beds             = _to_int(raw.get("bedrooms") or raw.get("beds")),
-        baths            = _to_float(raw.get("bathrooms") or raw.get("baths")),
-        sqft             = _to_float(raw.get("livingArea") or raw.get("sqft")),
-        rental_strategy  = RentalStrategy.LTR,
-        monthly_rate     = _clean_price(raw.get("price") or raw.get("rent")),
+        canonical_id       = make_canonical_id(address, zip_code),
+        source             = DataSource.ZILLOW_RENTAL,
+        source_id          = str(raw.get("zpid") or raw.get("id") or ""),
+        scraped_at         = _now_utc(),
+        address            = address,
+        zip_code           = zip_code,
+        lat                = lat,
+        lon                = lon,
+        beds               = _to_int(raw.get("beds") or info.get("bedrooms") or raw.get("bedrooms")),
+        baths              = _to_float(raw.get("baths") or info.get("bathrooms") or raw.get("bathrooms")),
+        sqft               = _to_float(raw.get("area") or info.get("livingArea") or raw.get("livingArea")),
+        rental_strategy    = RentalStrategy.LTR,
+        monthly_rate       = _clean_price(raw.get("unformattedPrice") or info.get("price") or raw.get("price") or raw.get("rent")),
         utilities_included = bool(raw.get("utilitiesIncluded") or False),
-        raw              = raw,
+        raw                = raw,
     )
 
 

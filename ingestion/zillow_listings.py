@@ -87,8 +87,6 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
         memory_mbytes=1024,
     )
     logger.info("zillow_mf_raw_count", count=len(mf_raw))
-    if mf_raw:
-        logger.info("zillow_mf_sample_keys", keys=list(mf_raw[0].keys()), sample=mf_raw[0])
 
     # Fetch SFH (may timeout gracefully — SFH is optional)
     sfh_raw: list = []
@@ -104,22 +102,16 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
 
     all_raw = mf_raw + sfh_raw
     records: list[PropertyRecord] = []
-    zip_misses: int = 0
-    type_misses: int = 0
     for item in all_raw:
         try:
             rec = normalize_zillow_listing(item)
             if rec.zip_code not in ZIP_WHITELIST:
-                zip_misses += 1
                 continue
             if not _is_acceptable(rec):
-                type_misses += 1
                 continue
             records.append(rec)
         except Exception:
             logger.warning("zillow_listing_normalize_error", raw=item)
-    logger.info("zillow_listings_filter_stats",
-                zip_misses=zip_misses, type_misses=type_misses, passed=len(records))
 
     deduped = deduplicate_property_records(records)
     logger.info("zillow_listings_after_dedup", count=len(deduped),
