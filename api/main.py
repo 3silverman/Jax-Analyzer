@@ -11,6 +11,7 @@ Lifespan:
 from __future__ import annotations
 
 import json
+import socket
 import traceback
 from contextlib import asynccontextmanager
 
@@ -23,9 +24,20 @@ from api.routes.web import router as web_router
 logger = structlog.get_logger(__name__)
 
 
+def _probe_tcp(host: str, port: int, timeout: float = 5.0) -> None:
+    """Attempt a raw TCP connection and log the outcome."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            logger.info("db_tcp_reachable", host=host, port=port)
+    except OSError as exc:
+        logger.warning("db_tcp_unreachable", host=host, port=port, error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background scheduler on app startup."""
+    _probe_tcp("db.ceokzlhuclabvwcnycof.supabase.co", 5432)
+    _probe_tcp("db.ceokzlhuclabvwcnycof.supabase.co", 6543)
     scheduler = _build_scheduler()
     scheduler.start()
     logger.info("scheduler_started")
