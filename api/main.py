@@ -36,8 +36,7 @@ def _probe_tcp(host: str, port: int, timeout: float = 5.0) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background scheduler on app startup."""
-    _probe_tcp("db.ceokzlhuclabvwcnycof.supabase.co", 5432)
-    _probe_tcp("db.ceokzlhuclabvwcnycof.supabase.co", 6543)
+    _probe_tcp("aws-1-us-east-1.pooler.supabase.com", 5432)
     scheduler = _build_scheduler()
     scheduler.start()
     logger.info("scheduler_started")
