@@ -99,13 +99,19 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         sfh_future = pool.submit(_run_sfh)
-        # MF runs on the passed client in the current thread
-        mf_raw = client.run_actor(
-            ZILLOW_SCRAPER,
-            input_payload=_MF_ACTOR_INPUT,
-            memory_mbytes=1024,
-        )
-        logger.info("zillow_mf_raw_count", count=len(mf_raw))
+        # MF runs on the passed client in the current thread.
+        # Wrap in try/except so that an Apify actor failure (rate-limit, timeout,
+        # account concurrent-run cap) does not cause SFH results to be discarded.
+        mf_raw: list = []
+        try:
+            mf_raw = client.run_actor(
+                ZILLOW_SCRAPER,
+                input_payload=_MF_ACTOR_INPUT,
+                memory_mbytes=1024,
+            )
+            logger.info("zillow_mf_raw_count", count=len(mf_raw))
+        except Exception as exc:
+            logger.warning("zillow_mf_fetch_failed", error=str(exc))
         sfh_raw = sfh_future.result()
 
     all_raw = mf_raw + sfh_raw
