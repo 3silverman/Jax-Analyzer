@@ -77,3 +77,17 @@ async def close_engine() -> None:
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+
+
+def reset_engine() -> None:
+    """Abandon the current engine without closing connections.
+
+    Use this when switching event loop contexts — e.g. after a synchronous
+    pipeline job (which creates the engine on a background loop) finishes,
+    so that the next get_session() call rebuilds the engine on the current
+    (FastAPI) event loop.  Stale connections are cleaned up by Supabase's
+    idle timeout.
+    """
+    global _engine, _Session
+    _engine = None
+    _Session = None

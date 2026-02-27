@@ -903,9 +903,11 @@ def run_pipeline(
         return cards
 
     # Cards were built and cached during the first pass — no need to recompute.
+    # Include review-tier deals (40–59) in the inbox so the UI isn't empty;
+    # they render below inbox deals and are sorted by score descending.
     alert_cards = [card_cache[rec.canonical_id] for rec, _ in ranked.alerts
                    if rec.canonical_id in card_cache]
-    inbox_cards = [card_cache[rec.canonical_id] for rec, _ in ranked.inbox
+    inbox_cards = [card_cache[rec.canonical_id] for rec, _ in (ranked.inbox + ranked.review)
                    if rec.canonical_id in card_cache]
 
     # ── Send alerts ────────────────────────────────────────────────────────────

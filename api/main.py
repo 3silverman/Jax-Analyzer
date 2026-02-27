@@ -90,6 +90,13 @@ async def _run_daily_scan() -> None:
         )
 
         pipeline_out = await asyncio.to_thread(run_pipeline, scan_result)
+
+        # The pipeline runs in a worker thread and creates the asyncpg engine
+        # on a background event loop.  Reset it so _persist_pipeline_results
+        # (which runs on the FastAPI loop) gets a fresh engine on this loop.
+        from db.connection import reset_engine
+        reset_engine()
+
         summary = pipeline_out.get("scan_summary", {})
         logger.info(
             "scan_pipeline_done",
