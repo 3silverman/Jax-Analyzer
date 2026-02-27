@@ -690,7 +690,7 @@ def _build_deal_card(
         "canonical_id":       record.canonical_id,
         "source_id":          record.source_id,
         "source":             record.source.value if hasattr(record.source, "value") else str(record.source),
-        "scraped_at":         record.scraped_at,
+        "scraped_at":         record.scraped_at.isoformat(),
         "address":            record.address,
         "city":               record.city,
         "zip_code":           record.zip_code,
