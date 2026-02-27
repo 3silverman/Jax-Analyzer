@@ -11,10 +11,12 @@ Lifespan:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import traceback
 from contextlib import asynccontextmanager
 
+import httpx
 import structlog
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -33,10 +35,39 @@ def _probe_tcp(host: str, port: int, timeout: float = 5.0) -> None:
         logger.warning("db_tcp_unreachable", host=host, port=port, error=str(exc))
 
 
+def _log_zillow_actor_schema() -> None:
+    """Fetch and log the inputSchema for maxcopell~zillow-zip-search so we can verify the exact input format."""
+    token = os.environ.get("APIFY_TOKEN", "")
+    if not token:
+        logger.warning("zillow_actor_schema_skip", reason="APIFY_TOKEN not set")
+        return
+    try:
+        resp = httpx.get(
+            "https://api.apify.com/v2/acts/maxcopell~zillow-zip-search",
+            params={"token": token},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        versions = data.get("versions", [])
+        raw_schema = versions[0].get("inputSchema") if versions else None
+        if raw_schema:
+            try:
+                parsed = json.loads(raw_schema)
+                logger.info("zillow_actor_input_schema", schema=parsed)
+            except json.JSONDecodeError:
+                logger.info("zillow_actor_input_schema_raw", schema=raw_schema)
+        else:
+            logger.warning("zillow_actor_schema_missing", data=data)
+    except Exception as exc:
+        logger.warning("zillow_actor_schema_fetch_failed", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start background scheduler on app startup."""
     _probe_tcp("aws-1-us-east-1.pooler.supabase.com", 5432)
+    _log_zillow_actor_schema()
     scheduler = _build_scheduler()
     scheduler.start()
     logger.info("scheduler_started")

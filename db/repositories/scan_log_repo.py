@@ -1,6 +1,7 @@
 """db/repositories/scan_log_repo.py — scan_log CRUD."""
 
 from __future__ import annotations
+import json
 from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy import text
@@ -37,7 +38,7 @@ async def complete_scan(
             "scanned": properties_scanned,
             "passed":  passed_gates,
             "alerts":  alerts_triggered,
-            "errors":  errors,
+            "errors":  json.dumps(errors),
         },
     )
 

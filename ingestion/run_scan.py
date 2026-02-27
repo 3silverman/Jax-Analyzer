@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 import structlog
 
 from ingestion.apify_client import ApifyClient, ApifyError
-from ingestion.furnished_finder import fetch_mtr_comps
 from ingestion.zillow_listings import fetch_listings
 from ingestion.zillow_rentals import fetch_rental_comps
 from normalization.schema import PropertyRecord, RentalComp
@@ -104,13 +103,10 @@ def run_scan() -> ScanResult:
             result.errors.append(msg)
 
         # ── Furnished Finder MTR comps ────────────────────────────────────────
-        try:
-            result.mtr_comps = fetch_mtr_comps(apify)
-            logger.info("scan_mtr_comps_fetched", count=len(result.mtr_comps))
-        except Exception as exc:
-            msg = f"furnished_finder failed: {exc}"
-            logger.error("scan_actor_error", actor="furnished_finder", error=msg)
-            result.errors.append(msg)
+        # TODO: re-enable once a working Apify actor for Furnished Finder is confirmed.
+        # The rigelbytes~furnishedfinder actor slug is unverified; skipping to avoid
+        # wasting actor credits on a run that will fail.
+        logger.info("scan_mtr_comps_skipped", reason="furnished_finder_actor_unverified")
 
     if result.total_listings == 0:
         logger.warning("scan_no_listings_found")
