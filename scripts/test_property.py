@@ -166,17 +166,15 @@ uw = underwrite(prop_dict, comps=all_comps)
 worst_ltr = uw.ltr.worst_case_cash_flow
 worst_mtr = uw.mtr.worst_case_cash_flow
 worst_str = uw.str_.worst_case_cash_flow
-best_cf   = max(worst_ltr, worst_mtr, worst_str)
-best_base = uw.best_strategy(Scenario.BASE)
 
 # ── 7. Scoring ────────────────────────────────────────────────────────────────
 
-from scoring.deal_scorer import score_deal
+from scoring.deal_scorer import StrategyMetrics, score_deal
 
 ds = score_deal(
-    conservative_monthly_cash_flow = best_cf,
-    dscr            = best_base.dscr,
-    cash_on_cash    = best_base.cash_on_cash,
+    ltr  = StrategyMetrics(cash_flow=worst_ltr, dscr=uw.ltr.base.dscr, cash_on_cash=uw.ltr.base.cash_on_cash),
+    mtr  = StrategyMetrics(cash_flow=worst_mtr, dscr=uw.mtr.base.dscr, cash_on_cash=uw.mtr.base.cash_on_cash),
+    str_ = StrategyMetrics(cash_flow=worst_str, dscr=uw.str_.base.dscr, cash_on_cash=uw.str_.base.cash_on_cash),
     year_built      = DELLWOOD_TRIPLEX.year_built,
     flood_high_risk = flood["is_high_risk"],
     purchase_price  = DELLWOOD_TRIPLEX.price,
@@ -441,13 +439,11 @@ uw2 = underwrite(prop_dict2, comps=all_comps2)
 worst_ltr2 = uw2.ltr.worst_case_cash_flow
 worst_mtr2 = uw2.mtr.worst_case_cash_flow
 worst_str2 = uw2.str_.worst_case_cash_flow
-best_cf2   = max(worst_ltr2, worst_mtr2, worst_str2)
-best_base2 = uw2.best_strategy(Scenario.BASE)
 
 ds2 = score_deal(
-    conservative_monthly_cash_flow = best_cf2,
-    dscr            = best_base2.dscr,
-    cash_on_cash    = best_base2.cash_on_cash,
+    ltr  = StrategyMetrics(cash_flow=worst_ltr2, dscr=uw2.ltr.base.dscr, cash_on_cash=uw2.ltr.base.cash_on_cash),
+    mtr  = StrategyMetrics(cash_flow=worst_mtr2, dscr=uw2.mtr.base.dscr, cash_on_cash=uw2.mtr.base.cash_on_cash),
+    str_ = StrategyMetrics(cash_flow=worst_str2, dscr=uw2.str_.base.dscr, cash_on_cash=uw2.str_.base.cash_on_cash),
     year_built      = SPRINGFIELD_ADU.year_built,
     flood_high_risk = flood2["is_high_risk"],
     purchase_price  = SPRINGFIELD_ADU.price,

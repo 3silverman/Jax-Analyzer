@@ -27,7 +27,7 @@ from neighborhood.liveability import compute_liveability
 from neighborhood.street_view import get_street_view_urls, score_street_view
 from neighborhood.walk_score import get_walk_score
 from normalization.schema import DataSource, PropertyRecord, RentalComp, RentalStrategy
-from scoring.deal_scorer import score_deal
+from scoring.deal_scorer import StrategyMetrics, score_deal
 from scoring.ranker import rank_deals
 from underwriting.calculator import underwrite, Scenario
 
@@ -741,6 +741,7 @@ def _build_deal_card(
 
         # Scoring
         "deal_score":           deal_score.deal_score,
+        "winning_strategy":     deal_score.winning_strategy,
         "return_score":         deal_score.return_score.score,
         "risk_score":           deal_score.risk_score.score,
         "confidence_score_pts": deal_score.confidence_score.score,
@@ -861,22 +862,26 @@ def run_pipeline(
 
             uw_result = underwrite(prop_dict, comps=all_comps if all_comps else None)
 
-            # Best conservative CF across strategies
-            cf = max(
-                uw_result.ltr.worst_case_cash_flow,
-                uw_result.mtr.worst_case_cash_flow,
-                uw_result.str_.worst_case_cash_flow,
-            )
-            best_base = uw_result.best_strategy(Scenario.BASE)
-
             # Appraisal gap from Redfin zip median
             zip_median = zip_medians.get(record.zip_code)
 
-            # ── Scoring ────────────────────────────────────────────────────────
+            # ── Scoring — all three strategies evaluated independently ──────────
             deal_score = score_deal(
-                conservative_monthly_cash_flow = cf,
-                dscr            = best_base.dscr,
-                cash_on_cash    = best_base.cash_on_cash,
+                ltr  = StrategyMetrics(
+                    cash_flow    = uw_result.ltr.worst_case_cash_flow,
+                    dscr         = uw_result.ltr.base.dscr,
+                    cash_on_cash = uw_result.ltr.base.cash_on_cash,
+                ),
+                mtr  = StrategyMetrics(
+                    cash_flow    = uw_result.mtr.worst_case_cash_flow,
+                    dscr         = uw_result.mtr.base.dscr,
+                    cash_on_cash = uw_result.mtr.base.cash_on_cash,
+                ),
+                str_ = StrategyMetrics(
+                    cash_flow    = uw_result.str_.worst_case_cash_flow,
+                    dscr         = uw_result.str_.base.dscr,
+                    cash_on_cash = uw_result.str_.base.cash_on_cash,
+                ),
                 year_built      = record.year_built,
                 flood_high_risk = neighborhood["flood_high_risk"],
                 purchase_price  = record.price,

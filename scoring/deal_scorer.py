@@ -16,6 +16,14 @@ from scoring.risk_score import RiskScore, compute_risk_score
 
 
 @dataclass
+class StrategyMetrics:
+    """Per-strategy underwriting inputs for deal scoring."""
+    cash_flow: float      # worst-case monthly cash flow (across all stress tests)
+    dscr: float           # base-case DSCR
+    cash_on_cash: float   # base-case cash-on-cash return
+
+
+@dataclass
 class DealScore:
     """Full scoring breakdown for a single deal."""
     deal_score:         int                # 0–100
@@ -23,6 +31,7 @@ class DealScore:
     risk_score:         RiskScore
     confidence_score:   ConfidenceScore
 
+    winning_strategy:   str               # "LTR", "MTR", or "STR"
     is_high_priority:   bool              # True if all alert conditions met
     alert_reasons:      list[str]         # why alert was/wasn't triggered
 
@@ -76,21 +85,25 @@ def _generate_explanation(
     cf: float,
     dscr: float,
     is_high_priority: bool,
+    winning_strategy: str,
 ) -> str:
     """Generate a 2–3 sentence plain-English deal summary."""
     parts: list[str] = []
 
+    strategy_label = {"LTR": "long-term rental", "MTR": "medium-term rental", "STR": "short-term rental"}.get(winning_strategy, winning_strategy)
+
     if deal_score >= 75:
         parts.append(
-            f"This property scores {deal_score}/100, placing it in the top tier of analyzed deals."
+            f"This property scores {deal_score}/100 as a {strategy_label}, "
+            f"placing it in the top tier of analyzed deals."
         )
     elif deal_score >= 60:
         parts.append(
-            f"This property scores {deal_score}/100 — a solid deal worth closer review."
+            f"This property scores {deal_score}/100 — a solid {strategy_label} deal worth closer review."
         )
     else:
         parts.append(
-            f"This property scores {deal_score}/100 — marginal; proceed with caution."
+            f"This property scores {deal_score}/100 as a {strategy_label} — marginal; proceed with caution."
         )
 
     if not return_s.disqualified:
@@ -115,18 +128,18 @@ def _generate_explanation(
 
 
 def score_deal(
-    # Return inputs
-    conservative_monthly_cash_flow: float,
-    dscr: float,
-    cash_on_cash: float,
-    # Risk inputs
+    # Per-strategy return inputs — all three evaluated; highest-scoring wins
+    ltr: StrategyMetrics,
+    mtr: StrategyMetrics,
+    str_: StrategyMetrics,
+    # Risk inputs (property-level, same for all strategies)
     year_built: int | None,
     flood_high_risk: bool,
     purchase_price: float,
     zip_median_price: float | None = None,
     all_month_to_month: bool = False,
     no_inspection_contingency: bool = False,
-    # Confidence inputs
+    # Confidence inputs (property-level, same for all strategies)
     raw_confidence: float = 0.5,
     scraped_at: datetime | None = None,
     comps_count: int = 0,
@@ -138,12 +151,17 @@ def score_deal(
     property_type: str | None = None,
 ) -> DealScore:
     """
-    Compute the full Deal Score for a property.
+    Compute the full Deal Score for a property by evaluating LTR, MTR, and STR
+    independently, then returning the score of the highest-scoring strategy.
+
+    Risk and Confidence scores are property-level and computed once.
+    Return Score is computed per strategy; the strategy with the highest
+    combined deal score wins and is labelled on the returned DealScore.
 
     Args:
-        conservative_monthly_cash_flow: Best strategy worst-case monthly cash flow.
-        dscr:             Debt Service Coverage Ratio (conservative case).
-        cash_on_cash:     Cash-on-cash return as decimal.
+        ltr:              LTR worst-case cash flow, base DSCR, base CoC.
+        mtr:              MTR worst-case cash flow, base DSCR, base CoC.
+        str_:             STR worst-case cash flow, base DSCR, base CoC.
         year_built:       Year property was built (or None).
         flood_high_risk:  True if in AE/VE flood zone.
         purchase_price:   Property purchase price.
@@ -158,10 +176,9 @@ def score_deal(
         strategy_validated: At least one strategy backed by comps.
         confidence_penalty: If True, Confidence Score is hard-capped at 19.
         property_type:    PropertyType string (e.g. "sfr", "sfr_adu", "duplex").
-                          Used for SFH vacancy risk (-2 for "sfr") and ADU bonus (+3 for "sfr_adu").
 
     Returns:
-        DealScore with full component breakdown and alert status.
+        DealScore for the winning strategy, with winning_strategy labelled.
     """
     if scraped_at is None:
         scraped_at = datetime.now(tz=timezone.utc)
@@ -169,10 +186,7 @@ def score_deal(
     pt = (property_type or "").lower()
     is_adu = pt == "sfr_adu"
 
-    return_s = compute_return_score(
-        conservative_monthly_cash_flow, dscr, cash_on_cash,
-        is_adu=is_adu,
-    )
+    # Risk and Confidence are property-level — compute once
     risk_s = compute_risk_score(
         year_built, flood_high_risk, purchase_price,
         zip_median_price, all_month_to_month, no_inspection_contingency,
@@ -184,24 +198,47 @@ def score_deal(
         confidence_penalty=confidence_penalty,
     )
 
-    deal_score = min(100, return_s.score + risk_s.score + conf_s.score)
+    # Evaluate each strategy independently; pick the one with the highest deal score
+    candidates = [
+        ("LTR", ltr),
+        ("MTR", mtr),
+        ("STR", str_),
+    ]
+
+    best_name:     str        = "LTR"
+    best_score:    int        = -1
+    best_return_s: ReturnScore | None = None
+    best_metrics:  StrategyMetrics | None = None
+
+    for name, metrics in candidates:
+        return_s  = compute_return_score(metrics.cash_flow, metrics.dscr, metrics.cash_on_cash, is_adu=is_adu)
+        ds        = min(100, return_s.score + risk_s.score + conf_s.score)
+        if ds > best_score:
+            best_score    = ds
+            best_name     = name
+            best_return_s = return_s
+            best_metrics  = metrics
+
+    assert best_return_s is not None and best_metrics is not None  # always set after loop
 
     is_hp, alert_reasons = _check_alert(
-        conservative_monthly_cash_flow, dscr, risk_s, conf_s, strategy_validated
+        best_metrics.cash_flow, best_metrics.dscr, risk_s, conf_s, strategy_validated
     )
 
     explanation = _generate_explanation(
-        deal_score, return_s, risk_s, conf_s,
-        conservative_monthly_cash_flow, dscr, is_hp,
+        best_score, best_return_s, risk_s, conf_s,
+        best_metrics.cash_flow, best_metrics.dscr, is_hp,
+        winning_strategy=best_name,
     )
 
     return DealScore(
-        deal_score         = deal_score,
-        return_score       = return_s,
-        risk_score         = risk_s,
-        confidence_score   = conf_s,
-        is_high_priority   = is_hp,
-        alert_reasons      = alert_reasons,
-        why_scored_high    = explanation,
+        deal_score        = best_score,
+        return_score      = best_return_s,
+        risk_score        = risk_s,
+        confidence_score  = conf_s,
+        winning_strategy  = best_name,
+        is_high_priority  = is_hp,
+        alert_reasons     = alert_reasons,
+        why_scored_high   = explanation,
         strategy_validated = strategy_validated,
     )
