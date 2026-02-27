@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+import traceback as _traceback
 from datetime import datetime, timezone
 from typing import Any
 
@@ -939,8 +940,23 @@ def run_pipeline(
             scored_pairs.append((record, deal_score))
 
         except Exception as exc:
-            logger.error("pipeline_property_error", address=record.address, error=str(exc))
+            logger.error(
+                "pipeline_property_error",
+                address=record.address,
+                error=str(exc),
+                exc_type=type(exc).__name__,
+                traceback=_traceback.format_exc(),
+            )
             continue
+
+    # ── Post-loop diagnostics ──────────────────────────────────────────────────
+    logger.info(
+        "pipeline_loop_complete",
+        total=scan_result.total_listings,
+        scored=len(scored_pairs),
+        rejected_gates=len(rejected_props),
+        errors=scan_result.total_listings - len(scored_pairs) - len(rejected_props),
+    )
 
     # ── Rank and partition ─────────────────────────────────────────────────────
     ranked = rank_deals(scored_pairs, failed_gate_ids=failed_ids)
