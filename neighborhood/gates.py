@@ -9,7 +9,7 @@ No underwriting or scoring is run on failed-gate properties.
 Gates (from CLAUDE.md):
   1. Crime grade B or above (A+, A, A-, B+, B, B-)
   2. Flood zone X or shaded X only (not AE, VE, AO, AH, A, V, AR, A99)
-  3. Zip code in whitelist (32204, 32205, 32206, 32207, 32210, 32211, 32217)
+  3. Zip code in whitelist (32204, 32205, 32206, 32207)
 """
 
 from __future__ import annotations

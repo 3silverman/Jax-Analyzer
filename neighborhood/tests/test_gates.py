@@ -76,7 +76,7 @@ class TestEvaluateGates:
         assert len(result.failed_gates) >= 3
 
     def test_all_whitelisted_zips_pass_zip_gate(self) -> None:
-        for zip_code in ["32204", "32205", "32206", "32207", "32210", "32211", "32217"]:
+        for zip_code in ["32204", "32205", "32206", "32207"]:
             result = evaluate_gates(_record(zip_code), _crime("A"), _flood("X"))
             assert result.passed is True, f"Zip {zip_code} should pass"
 

@@ -535,7 +535,7 @@ async def trigger_scan():
 
 def _default_settings() -> dict:
     return {
-        "zip_whitelist":   ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
+        "zip_whitelist":   ["32204", "32205", "32206", "32207"],
         "alert_threshold": 85,
         "digest_email":    "",
     }

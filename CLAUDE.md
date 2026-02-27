@@ -52,7 +52,7 @@ Property moves to **Failed Gates** tab if it fails any gate:
 |---|---|
 | Crime grade | B or above (CrimeGrade.org) |
 | Flood zone | X or shaded X only (no AE/VE) |
-| Zip whitelist | 32204, 32205, 32206, 32207, 32210, 32211, 32217 |
+| Zip whitelist | 32204, 32205, 32206, 32207 |
 
 Visual scoring runs only on financially viable deals (avoids wasting API calls).
 

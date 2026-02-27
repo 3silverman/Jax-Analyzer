@@ -56,7 +56,7 @@ UNITS_BY_TYPE: dict[PropertyType, int] = {
 
 # Target zip codes for Jacksonville VA house-hack strategy
 ZIP_WHITELIST: frozenset[str] = frozenset(
-    ["32204", "32205", "32206", "32207", "32210", "32211", "32217"]
+    ["32204", "32205", "32206", "32207"]
 )
 
 

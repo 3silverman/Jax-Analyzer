@@ -26,7 +26,7 @@ logger = structlog.get_logger(__name__)
 # ── Actor configuration ────────────────────────────────────────────────────────
 
 _MF_ACTOR_INPUT: dict[str, Any] = {
-    "zipCodes":        ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
+    "zipCodes":        ["32204", "32205", "32206", "32207"],
     "forSaleByAgent":  True,
     "forSaleByOwner":  True,
     "forRent":         False,

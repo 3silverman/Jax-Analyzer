@@ -99,5 +99,5 @@ class TestPropertyRecordComputed:
 
 class TestZipWhitelist:
     def test_all_target_zips_present(self) -> None:
-        expected = {"32204", "32205", "32206", "32207", "32210", "32211", "32217"}
+        expected = {"32204", "32205", "32206", "32207"}
         assert expected <= ZIP_WHITELIST
