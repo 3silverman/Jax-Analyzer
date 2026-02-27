@@ -1,0 +1,143 @@
+[
+  {
+    "zpid": "2099001",
+    "addressStreet": "845 Riverside Ave",
+    "addressZipcode": "32204",
+    "addressCity": "Jacksonville",
+    "addressState": "FL",
+    "beds": 4,
+    "baths": 2,
+    "area": 2200,
+    "unformattedPrice": "$299,000",
+    "latLong": {"latitude": 30.3246, "longitude": -81.681},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "MULTI_FAMILY",
+        "livingArea": 2200,
+        "bedrooms": 4,
+        "bathrooms": 2,
+        "yearBuilt": 1958,
+        "daysOnZillow": 14,
+        "lotAreaValue": 6500,
+        "price": 299000,
+        "streetAddress": "845 Riverside Ave",
+        "zipcode": "32204",
+        "latitude": 30.3246,
+        "longitude": -81.681
+      }
+    }
+  },
+  {
+    "zpid": "2099002",
+    "addressStreet": "2310 Oak St",
+    "addressZipcode": "32207",
+    "addressCity": "Jacksonville",
+    "addressState": "FL",
+    "beds": 4,
+    "baths": 2,
+    "area": 2800,
+    "unformattedPrice": "$349,900",
+    "latLong": {"latitude": 30.3024, "longitude": -81.6395},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "MULTI_FAMILY",
+        "livingArea": 2800,
+        "bedrooms": 4,
+        "bathrooms": 2,
+        "yearBuilt": 1962,
+        "daysOnZillow": 28,
+        "lotAreaValue": 8000,
+        "price": 349900,
+        "streetAddress": "2310 Oak St",
+        "zipcode": "32207",
+        "latitude": 30.3024,
+        "longitude": -81.6395
+      }
+    }
+  },
+  {
+    "zpid": "2099003",
+    "addressStreet": "1220 Avondale Ave",
+    "addressZipcode": "32205",
+    "addressCity": "Jacksonville",
+    "addressState": "FL",
+    "beds": 3,
+    "baths": 1,
+    "area": 1400,
+    "unformattedPrice": "$249,500",
+    "latLong": {"latitude": 30.3051, "longitude": -81.7049},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 1400,
+        "bedrooms": 3,
+        "bathrooms": 1,
+        "yearBuilt": 1948,
+        "daysOnZillow": 5,
+        "lotAreaValue": 5500,
+        "price": 249500,
+        "streetAddress": "1220 Avondale Ave",
+        "zipcode": "32205",
+        "latitude": 30.3051,
+        "longitude": -81.7049
+      }
+    }
+  },
+  {
+    "zpid": "2099004",
+    "addressStreet": "444 Quadplex Blvd",
+    "addressZipcode": "32206",
+    "addressCity": "Jacksonville",
+    "addressState": "FL",
+    "beds": 8,
+    "baths": 4,
+    "area": 4200,
+    "unformattedPrice": "$479,000",
+    "latLong": {"latitude": 30.3398, "longitude": -81.6524},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "MULTI_FAMILY",
+        "livingArea": 4200,
+        "bedrooms": 8,
+        "bathrooms": 4,
+        "yearBuilt": 1970,
+        "daysOnZillow": 42,
+        "lotAreaValue": 9200,
+        "price": 479000,
+        "streetAddress": "444 Quadplex Blvd",
+        "zipcode": "32206",
+        "latitude": 30.3398,
+        "longitude": -81.6524
+      }
+    },
+    "description": "Fully occupied quadplex — four 2BR/1BA units, all month-to-month tenants."
+  },
+  {
+    "zpid": "2099005",
+    "addressStreet": "312 King Rd",
+    "addressZipcode": "32206",
+    "addressCity": "Jacksonville",
+    "addressState": "FL",
+    "beds": 4,
+    "baths": 2,
+    "area": 1900,
+    "unformattedPrice": "$99,900",
+    "latLong": {"latitude": 30.338, "longitude": -81.653},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "MULTI_FAMILY",
+        "livingArea": 1900,
+        "bedrooms": 4,
+        "bathrooms": 2,
+        "yearBuilt": 1972,
+        "daysOnZillow": 61,
+        "lotAreaValue": 5800,
+        "price": 99900,
+        "streetAddress": "312 King Rd",
+        "zipcode": "32206",
+        "latitude": 30.338,
+        "longitude": -81.653
+      }
+    }
+  }
+]

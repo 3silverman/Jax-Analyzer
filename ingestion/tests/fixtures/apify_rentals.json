@@ -1,0 +1,170 @@
+[
+  {
+    "zpid": "3099001",
+    "addressStreet": "900 Park St",
+    "addressZipcode": "32204",
+    "beds": 2,
+    "baths": 1,
+    "area": 920,
+    "unformattedPrice": "$1,300",
+    "latLong": {"latitude": 30.3210, "longitude": -81.679},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 920,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1945,
+        "price": 1300,
+        "zipcode": "32204"
+      }
+    }
+  },
+  {
+    "zpid": "3099002",
+    "addressStreet": "612 Rosselle St",
+    "addressZipcode": "32204",
+    "beds": 2,
+    "baths": 1,
+    "area": 880,
+    "unformattedPrice": "$1,450",
+    "latLong": {"latitude": 30.3198, "longitude": -81.6793},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 880,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1942,
+        "price": 1450,
+        "zipcode": "32204"
+      }
+    }
+  },
+  {
+    "zpid": "3099003",
+    "addressStreet": "1105 Stockton St",
+    "addressZipcode": "32204",
+    "beds": 2,
+    "baths": 1,
+    "area": 950,
+    "unformattedPrice": "$1,375",
+    "latLong": {"latitude": 30.3175, "longitude": -81.6811},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 950,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1950,
+        "price": 1375,
+        "zipcode": "32204"
+      }
+    }
+  },
+  {
+    "zpid": "3099004",
+    "addressStreet": "2105 Hendricks Ave",
+    "addressZipcode": "32207",
+    "beds": 2,
+    "baths": 1,
+    "area": 900,
+    "unformattedPrice": "$1,500",
+    "latLong": {"latitude": 30.301, "longitude": -81.643},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 900,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1955,
+        "price": 1500,
+        "zipcode": "32207"
+      }
+    }
+  },
+  {
+    "zpid": "3099005",
+    "addressStreet": "3320 Dellwood Ave",
+    "addressZipcode": "32207",
+    "beds": 2,
+    "baths": 1,
+    "area": 860,
+    "unformattedPrice": "$1,425",
+    "latLong": {"latitude": 30.299, "longitude": -81.641},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 860,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1948,
+        "price": 1425,
+        "zipcode": "32207"
+      }
+    }
+  },
+  {
+    "zpid": "3099006",
+    "addressStreet": "1445 Herschel St",
+    "addressZipcode": "32205",
+    "beds": 3,
+    "baths": 2,
+    "area": 1300,
+    "unformattedPrice": "$1,800",
+    "latLong": {"latitude": 30.308, "longitude": -81.702},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 1300,
+        "bedrooms": 3,
+        "bathrooms": 2,
+        "yearBuilt": 1952,
+        "price": 1800,
+        "zipcode": "32205"
+      }
+    }
+  },
+  {
+    "zpid": "3099007",
+    "addressStreet": "555 King Rd",
+    "addressZipcode": "32206",
+    "beds": 2,
+    "baths": 1,
+    "area": 850,
+    "unformattedPrice": "$1,200",
+    "latLong": {"latitude": 30.3395, "longitude": -81.651},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 850,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1965,
+        "price": 1200,
+        "zipcode": "32206"
+      }
+    }
+  },
+  {
+    "zpid": "3099008",
+    "addressStreet": "710 King Rd",
+    "addressZipcode": "32206",
+    "beds": 2,
+    "baths": 1,
+    "area": 875,
+    "unformattedPrice": "$1,250",
+    "latLong": {"latitude": 30.341, "longitude": -81.652},
+    "hdpData": {
+      "homeInfo": {
+        "homeType": "SINGLE_FAMILY",
+        "livingArea": 875,
+        "bedrooms": 2,
+        "bathrooms": 1,
+        "yearBuilt": 1968,
+        "price": 1250,
+        "zipcode": "32206"
+      }
+    }
+  }
+]
