@@ -705,7 +705,7 @@ def run_pipeline(
                     "address":       record.address,
                     "zip_code":      record.zip_code,
                     "price":         record.price,
-                    "property_type": str(record.property_type),
+                    "property_type": record.property_type.value if hasattr(record.property_type, "value") else str(record.property_type),
                     "num_units":     record.num_units,
                     "crime_grade":   neighborhood["crime_grade"],
                     "flood_zone":    neighborhood["flood_zone"],

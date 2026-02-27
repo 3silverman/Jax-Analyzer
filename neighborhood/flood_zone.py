@@ -18,8 +18,9 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 # FEMA NFHL REST endpoint — returns flood zone for a point
+# Note: legacy /gis/nfhl/rest/ path returns 404; correct path is /arcgis/rest/
 _FEMA_URL = (
-    "https://hazards.fema.gov/gis/nfhl/rest/services/public/NFHL/MapServer/28/query"
+    "https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer/28/query"
 )
 
 # Zones that trigger the hard gate failure

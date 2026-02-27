@@ -6,6 +6,7 @@ Async CRUD operations for the properties table.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -72,7 +73,7 @@ async def upsert_property(session: AsyncSession, rec: dict[str, Any]) -> None:
         "confidence_score": rec.get("confidence_score", 0.0),
         "missing_fields":  rec.get("missing_fields", []),
         "status":          rec.get("status", "active"),
-        "raw":             rec.get("raw", {}),
+        "raw":             json.dumps(rec.get("raw", {})),
     })
 
 

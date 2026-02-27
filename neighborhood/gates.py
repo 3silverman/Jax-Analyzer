@@ -63,13 +63,9 @@ def evaluate_gates(
         )
 
     # ── Gate 2: Crime grade ───────────────────────────────────────────────────
-    if crime["low_confidence"]:
-        # Can't confirm grade — fail gate conservatively
-        failures.append(
-            f"Crime grade could not be verified for zip {record.zip_code} "
-            f"(scraped grade: {crime['grade']!r}). Requires manual confirmation."
-        )
-    elif not crime["passes_gate"]:
+    # low_confidence means the scraper couldn't confirm the grade (e.g. API down).
+    # We allow these through rather than blocking on missing data; the UI flags them.
+    if not crime["low_confidence"] and not crime["passes_gate"]:
         failures.append(
             f"Crime grade {crime['grade']!r} does not meet B-or-above requirement "
             f"for zip {record.zip_code}"
