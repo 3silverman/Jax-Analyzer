@@ -121,9 +121,11 @@ class ApifyClient:
         """
         logger.info("apify_actor_start", actor_id=actor_id)
 
-        body = {"input": input_payload, "options": {"memoryMbytes": memory_mbytes}}
-        result = self._post(f"acts/{actor_id}/runs", json=body)
-        run_id = result["data"]["id"]
+        # Apify REST API: input is the raw body; memory is a query param
+        url = f"{_BASE_URL}/acts/{actor_id}/runs"
+        response = self._http.post(url, json=input_payload, params={"memory": memory_mbytes})
+        response.raise_for_status()
+        run_id = response.json()["data"]["id"]
         logger.info("apify_run_created", run_id=run_id)
 
         dataset_id = self._wait_for_run(run_id)
