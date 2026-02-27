@@ -102,6 +102,7 @@ async def _run_daily_scan() -> None:
             "scan_pipeline_done",
             inbox=len(pipeline_out.get("inbox", [])),
             alerts=len(pipeline_out.get("alerts", [])),
+            scored_low=len(pipeline_out.get("scored_low", [])),
             rejected=len(pipeline_out.get("rejected", [])),
             passed_gates=summary.get("passed_gates", 0),
             total_scanned=summary.get("total_scanned", 0),
@@ -109,9 +110,10 @@ async def _run_daily_scan() -> None:
 
         # Update in-memory store (always)
         store = get_store()
-        store["inbox"]   = pipeline_out.get("inbox", [])
-        store["alerts"]  = pipeline_out.get("alerts", [])
-        store["rejected"] = pipeline_out.get("rejected", [])
+        store["inbox"]      = pipeline_out.get("inbox", [])
+        store["alerts"]     = pipeline_out.get("alerts", [])
+        store["scored_low"] = pipeline_out.get("scored_low", [])
+        store["rejected"]   = pipeline_out.get("rejected", [])
         store.setdefault("scan_logs", []).append({
             **summary,
             "started_at": scan_result.scanned_at.isoformat(),
@@ -144,7 +146,11 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
             scan_log_repo,
         )
 
-        all_deals = pipeline_out.get("inbox", []) + pipeline_out.get("alerts", [])
+        all_deals = (
+            pipeline_out.get("inbox", []) +
+            pipeline_out.get("alerts", []) +
+            pipeline_out.get("scored_low", [])
+        )
         rejected  = pipeline_out.get("rejected", [])
         summary   = pipeline_out.get("scan_summary", {})
 

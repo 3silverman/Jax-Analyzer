@@ -86,18 +86,57 @@ async def get_neighborhood(session: AsyncSession, property_id: str) -> dict | No
     return dict(row) if row else None
 
 
-async def get_failed_gate_properties(session: AsyncSession, limit: int = 200) -> list[dict]:
-    """Return properties that failed hard gates (for Rejected tab)."""
+async def get_failed_gate_properties(session: AsyncSession, limit: int = 500) -> list[dict]:
+    """Return all rejected properties for the Rejected tab.
+
+    Two groups, unioned:
+      - failed_gates: failed a hard neighborhood gate (crime/flood/zip) — no score
+      - scored_low:   passed all gates but deal_score < 40 — includes score + reasons
+    """
     result = await session.execute(
         text("""
+            -- Group 1: hard-gate failures (no deal score)
             SELECT p.canonical_id, p.address, p.zip_code, p.price,
                    p.property_type, p.num_units, p.days_on_market,
                    ns.crime_grade, ns.flood_zone, ns.flood_high_risk,
-                   ns.failed_gate_reasons, ns.passed_gates
+                   ns.failed_gate_reasons,
+                   'failed_gates'::text    AS reject_type,
+                   NULL::int               AS deal_score,
+                   NULL::int               AS return_score,
+                   NULL::int               AS risk_score,
+                   NULL::int               AS confidence_score,
+                   NULL::double precision  AS conservative_cash_flow,
+                   NULL::text[]            AS score_reasons
             FROM neighborhood_scores ns
             JOIN properties p ON ns.property_id = p.canonical_id
             WHERE ns.passed_gates = FALSE
-            ORDER BY p.scraped_at DESC
+
+            UNION ALL
+
+            -- Group 2: passed gates, scored < 40
+            SELECT p.canonical_id, p.address, p.zip_code, p.price,
+                   p.property_type, p.num_units, p.days_on_market,
+                   ns.crime_grade, ns.flood_zone, ns.flood_high_risk,
+                   NULL                    AS failed_gate_reasons,
+                   'scored_low'::text      AS reject_type,
+                   ds.deal_score,
+                   ds.return_score,
+                   ds.risk_score,
+                   ds.confidence_score,
+                   ds.conservative_cash_flow,
+                   ds.alert_reasons        AS score_reasons
+            FROM (
+                SELECT DISTINCT ON (property_id)
+                    property_id, deal_score, return_score, risk_score,
+                    confidence_score, conservative_cash_flow, alert_reasons
+                FROM deal_scores
+                ORDER BY property_id, scored_at DESC
+            ) ds
+            JOIN properties p ON ds.property_id = p.canonical_id
+            JOIN neighborhood_scores ns ON ns.property_id = p.canonical_id
+            WHERE ds.deal_score < 40
+
+            ORDER BY deal_score DESC NULLS LAST
             LIMIT :lim
         """),
         {"lim": limit},

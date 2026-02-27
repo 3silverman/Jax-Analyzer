@@ -992,6 +992,12 @@ def run_pipeline(
     inbox_cards = [card_cache[rec.canonical_id] for rec, _ in (ranked.inbox + ranked.review)
                    if rec.canonical_id in card_cache]
 
+    # Scored-but-sub-threshold: passed gates, got underwritten and scored, but
+    # deal_score < 40 (or return_score disqualified).  card_cache membership
+    # distinguishes these from failed-gate properties which were never scored.
+    scored_low_cards = [card_cache[rec.canonical_id] for rec, _ in ranked.rejected
+                        if rec.canonical_id in card_cache]
+
     # ── Send alerts ────────────────────────────────────────────────────────────
     if alert_recipient:
         from delivery.alerts import maybe_send_alert
@@ -1002,11 +1008,13 @@ def run_pipeline(
     return {
         "alerts":       alert_cards,
         "inbox":        inbox_cards,
+        "scored_low":   scored_low_cards,
         "rejected":     rejected_props,
         "scan_summary": {
             "total_scanned":  scan_result.total_listings,
             "passed_gates":   len(scored_pairs),
             "alerts":         len(alert_cards),
+            "scored_low":     len(scored_low_cards),
             "errors":         scan_result.errors,
             "va_rate_pct":    round(va_rate_result.rate * 100, 3),
             "va_rate_source": va_rate_result.source,
