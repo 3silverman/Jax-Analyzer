@@ -85,14 +85,20 @@ class ApifyClient:
         raise ApifyError(f"Apify run {run_id} timed out after {_MAX_POLL_SECS}s")
 
     def _iter_dataset(self, dataset_id: str, batch: int = 1000) -> Generator[dict[str, Any], None, None]:
-        """Yield items from a dataset in batches."""
+        """Yield items from a dataset in batches.
+
+        GET /v2/datasets/{id}/items returns the items directly as a JSON array,
+        not wrapped in a {"data": {"items": [...]}} envelope.
+        """
         offset = 0
         while True:
-            data = self._get(
-                f"datasets/{dataset_id}/items",
+            url = f"{_BASE_URL}/datasets/{dataset_id}/items"
+            response = self._http.get(
+                url,
                 params={"offset": offset, "limit": batch, "clean": "true"},
             )
-            items: list[dict] = data.get("data", {}).get("items", [])
+            response.raise_for_status()
+            items: list[dict] = response.json()
             if not items:
                 break
             yield from items
