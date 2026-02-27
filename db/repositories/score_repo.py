@@ -1,6 +1,7 @@
 """db/repositories/score_repo.py — deal_scores CRUD."""
 
 from __future__ import annotations
+import json
 from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,8 +35,8 @@ async def insert_deal_score(session: AsyncSession, ds: dict[str, Any]) -> None:
         "dscr":                  ds.get("dscr"),
         "cash_on_cash":          ds.get("cash_on_cash"),
         "why_scored_high":       ds.get("why_scored_high"),
-        "assumptions_snapshot":  ds.get("assumptions_snapshot", {}),
-        "deal_card_json":        ds.get("deal_card_json", {}),
+        "assumptions_snapshot":  json.dumps(ds.get("assumptions_snapshot") or {}),
+        "deal_card_json":        json.dumps(ds.get("deal_card_json") or {}),
     })
 
 

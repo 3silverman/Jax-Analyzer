@@ -157,14 +157,13 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
         async with get_session() as session:
             scan_id = await scan_log_repo.start_scan(session)
 
+        # ── Transaction 1: properties + neighborhoods (committed before scores) ──
+        # Isolated so that a score-write failure can never roll back property rows.
         async with get_session() as session:
-            # Persist each scored deal
             for card in all_deals:
                 cid = card.get("canonical_id")
                 if not cid:
                     continue
-
-                # Upsert property
                 await property_repo.upsert_property(session, {
                     "canonical_id":    cid,
                     "source":          card.get("source", "zillow_sale"),
@@ -189,8 +188,6 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "status":          "active",
                     "raw":             {},
                 })
-
-                # Upsert neighborhood
                 await neighborhood_repo.upsert_neighborhood(session, {
                     "property_id":              cid,
                     "liveability_total":        (card.get("liveability") or {}).get("total", 0),
@@ -214,30 +211,7 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "maps_link":                card.get("maps_link"),
                 })
 
-                # Full deal card JSON (strategies, stress tests, VA loan)
-                deal_card_json = {k: v for k, v in card.items()
-                                  if k not in ("liveability",)}
-
-                # Insert deal score
-                await score_repo.insert_deal_score(session, {
-                    "property_id":           cid,
-                    "return_score":          card.get("return_score", 0),
-                    "risk_score":            card.get("risk_score", 0),
-                    "confidence_score":      card.get("confidence_score_pts", 0),
-                    "deal_score":            card.get("deal_score", 0),
-                    "is_high_priority":      card.get("is_high_priority", False),
-                    "alert_sent":            card.get("is_high_priority", False),
-                    "alert_reasons":         card.get("alert_reasons", []),
-                    "conservative_cash_flow": card.get("top_cash_flow"),
-                    "best_strategy":         card.get("top_strategy"),
-                    "dscr":                  (card.get("strategies") or [{}])[0].get("dscr"),
-                    "cash_on_cash":          (card.get("strategies") or [{}])[0].get("coc"),
-                    "why_scored_high":       card.get("why_scored_high"),
-                    "assumptions_snapshot":  {},
-                    "deal_card_json":        deal_card_json,
-                })
-
-            # Persist failed-gate properties
+            # Failed-gate properties also go in this transaction
             for rej in rejected:
                 cid = rej.get("canonical_id")
                 if not cid:
@@ -266,6 +240,32 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "flood_high_risk":   rej.get("flood_high_risk", False),
                     "passed_gates":      False,
                     "failed_gate_reasons": rej.get("failed_gates", []),
+                })
+        # Transaction 1 committed — properties + neighborhoods are now durable.
+
+        # ── Transaction 2: deal scores (scored deals only) ────────────────────
+        async with get_session() as session:
+            for card in all_deals:
+                cid = card.get("canonical_id")
+                if not cid:
+                    continue
+                deal_card_json = {k: v for k, v in card.items() if k != "liveability"}
+                await score_repo.insert_deal_score(session, {
+                    "property_id":           cid,
+                    "return_score":          card.get("return_score", 0),
+                    "risk_score":            card.get("risk_score", 0),
+                    "confidence_score":      card.get("confidence_score_pts", 0),
+                    "deal_score":            card.get("deal_score", 0),
+                    "is_high_priority":      card.get("is_high_priority", False),
+                    "alert_sent":            card.get("is_high_priority", False),
+                    "alert_reasons":         card.get("alert_reasons", []),
+                    "conservative_cash_flow": card.get("top_cash_flow"),
+                    "best_strategy":         card.get("top_strategy"),
+                    "dscr":                  (card.get("strategies") or [{}])[0].get("dscr"),
+                    "cash_on_cash":          (card.get("strategies") or [{}])[0].get("coc"),
+                    "why_scored_high":       card.get("why_scored_high"),
+                    "assumptions_snapshot":  {},
+                    "deal_card_json":        deal_card_json,
                 })
 
         # Complete the scan log
