@@ -9,6 +9,7 @@ and returns a list of deal dicts ready for the UI / DB.
 
 from __future__ import annotations
 
+import concurrent.futures
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -17,7 +18,7 @@ import structlog
 
 from ingestion.run_scan import ScanResult
 from ingestion.va_rates import fetch_va_rate
-from neighborhood.crime_grade import get_crime_grade, get_cached_crime_grade
+from neighborhood.crime_grade import get_crime_grade, get_cached_crime_grade, CrimeGradeResult
 from neighborhood.flood_zone import get_flood_zone
 from neighborhood.gates import evaluate_gates
 from neighborhood.hospital_proximity import get_hospital_proximity
@@ -464,6 +465,7 @@ def _enrich_neighborhood_sync(
     record: PropertyRecord,
     walkscore_key: str = "",
     maps_key: str = "",
+    prefetched_crime: "CrimeGradeResult | None" = None,
 ) -> dict:
     """Pure synchronous neighborhood enrichment (no DB caching for crime grade)."""
     lat  = record.lat  or 30.32
@@ -486,12 +488,14 @@ def _enrich_neighborhood_sync(
         flood = FloodZoneResult(flood_zone="UNKNOWN", is_high_risk=False,
                                 sfha=False, panel_number="")
 
-    try:
-        crime = get_crime_grade(record.zip_code)
-    except Exception as e:
-        logger.warning("crime_grade_error", zip_code=record.zip_code, error=str(e))
-        from neighborhood.crime_grade import CrimeGradeResult
-        crime = CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
+    if prefetched_crime is not None:
+        crime = prefetched_crime
+    else:
+        try:
+            crime = get_crime_grade(record.zip_code)
+        except Exception as e:
+            logger.warning("crime_grade_error", zip_code=record.zip_code, error=str(e))
+            crime = CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True)
 
     hospital = get_hospital_proximity(lat, lon)
     liveability = compute_liveability(walk_score, hospital, crime["grade"], flood)
@@ -691,13 +695,56 @@ def run_pipeline(
     alert_deals:    list[dict] = []
     scored_pairs:   list       = []
     failed_ids:     set        = set()
+    card_cache:     dict       = {}   # canonical_id → completed deal card
+
+    # ── Pre-fetch crime grades for each unique zip (7 max, sequential) ─────────
+    # Done upfront so parallel threads never duplicate a CrimeGrade.org scrape.
+    unique_zips = {r.zip_code for r in scan_result.listings}
+    crime_prefetch: dict[str, CrimeGradeResult] = {}
+    for zc in unique_zips:
+        try:
+            crime_prefetch[zc] = get_crime_grade(zc)
+        except Exception as exc:
+            logger.warning("crime_grade_prefetch_error", zip_code=zc, error=str(exc))
+            crime_prefetch[zc] = CrimeGradeResult(
+                grade="UNKNOWN", passes_gate=False, low_confidence=True
+            )
+
+    # ── Pre-compute neighborhood data for all listings in parallel ──────────────
+    # Per-property HTTP calls (FEMA flood zone, Walk Score) are the bottleneck;
+    # running them concurrently cuts this phase from O(N×latency) to ~O(latency).
+    def _enrich_one(rec: PropertyRecord) -> tuple[str, dict]:
+        crime = crime_prefetch.get(
+            rec.zip_code,
+            CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True),
+        )
+        return rec.canonical_id, _enrich_neighborhood_sync(
+            rec, walkscore_key, maps_key, prefetched_crime=crime
+        )
+
+    logger.info("pipeline_neighborhood_start", count=len(scan_result.listings))
+    neighborhood_map: dict[str, dict] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as _nbhd_pool:
+        _futures = {_nbhd_pool.submit(_enrich_one, rec): rec for rec in scan_result.listings}
+        for _fut in concurrent.futures.as_completed(_futures):
+            try:
+                cid, nbhd = _fut.result()
+                neighborhood_map[cid] = nbhd
+            except Exception as exc:
+                _rec = _futures[_fut]
+                logger.warning("neighborhood_prefetch_error",
+                               address=_rec.address, error=str(exc))
+    logger.info("pipeline_neighborhood_done", count=len(neighborhood_map))
 
     logger.info("pipeline_start", listings=scan_result.total_listings)
 
     for record in scan_result.listings:
         try:
-            # ── Neighborhood ──────────────────────────────────────────────────
-            neighborhood = _enrich_neighborhood(record, walkscore_key, maps_key)
+            # ── Neighborhood (pre-computed above) ─────────────────────────────
+            neighborhood = neighborhood_map.get(record.canonical_id)
+            if neighborhood is None:
+                logger.warning("neighborhood_missing", address=record.address)
+                continue
 
             if not neighborhood["passed_gates"]:
                 rejected_props.append({
@@ -833,6 +880,7 @@ def run_pipeline(
                 zip_median_sold=zip_median,
                 str_comp=str_result,
             )
+            card_cache[record.canonical_id] = card
             scored_pairs.append((record, deal_score))
 
         except Exception as exc:
@@ -878,8 +926,11 @@ def run_pipeline(
                 pass
         return cards
 
-    alert_cards = _cards_from_pairs(ranked.alerts)
-    inbox_cards = _cards_from_pairs(ranked.inbox)
+    # Cards were built and cached during the first pass — no need to recompute.
+    alert_cards = [card_cache[rec.canonical_id] for rec, _ in ranked.alerts
+                   if rec.canonical_id in card_cache]
+    inbox_cards = [card_cache[rec.canonical_id] for rec, _ in ranked.inbox
+                   if rec.canonical_id in card_cache]
 
     # ── Send alerts ────────────────────────────────────────────────────────────
     if alert_recipient:

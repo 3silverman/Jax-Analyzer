@@ -11,6 +11,7 @@ Searches two listing types:
 
 from __future__ import annotations
 
+import concurrent.futures
 from typing import Any
 
 import structlog
@@ -80,25 +81,32 @@ def fetch_listings(client: ApifyClient) -> list[PropertyRecord]:
     """
     logger.info("zillow_listings_fetch_start")
 
-    # Fetch multifamily
-    mf_raw = client.run_actor(
-        ZILLOW_SCRAPER,
-        input_payload=_MF_ACTOR_INPUT,
-        memory_mbytes=1024,
-    )
-    logger.info("zillow_mf_raw_count", count=len(mf_raw))
+    # Run MF and SFH actors concurrently. SFH creates its own client because
+    # httpx.Client is not thread-safe for concurrent use from multiple threads.
+    def _run_sfh() -> list:
+        try:
+            with ApifyClient() as sfh_client:
+                items = sfh_client.run_actor(
+                    ZILLOW_SCRAPER,
+                    input_payload=_SFH_ACTOR_INPUT,
+                    memory_mbytes=512,
+                )
+                logger.info("zillow_sfh_raw_count", count=len(items))
+                return items
+        except Exception as exc:
+            logger.warning("zillow_sfh_fetch_failed", error=str(exc))
+            return []
 
-    # Fetch SFH (may timeout gracefully — SFH is optional)
-    sfh_raw: list = []
-    try:
-        sfh_raw = client.run_actor(
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        sfh_future = pool.submit(_run_sfh)
+        # MF runs on the passed client in the current thread
+        mf_raw = client.run_actor(
             ZILLOW_SCRAPER,
-            input_payload=_SFH_ACTOR_INPUT,
-            memory_mbytes=512,
+            input_payload=_MF_ACTOR_INPUT,
+            memory_mbytes=1024,
         )
-        logger.info("zillow_sfh_raw_count", count=len(sfh_raw))
-    except Exception as exc:
-        logger.warning("zillow_sfh_fetch_failed", error=str(exc))
+        logger.info("zillow_mf_raw_count", count=len(mf_raw))
+        sfh_raw = sfh_future.result()
 
     all_raw = mf_raw + sfh_raw
     records: list[PropertyRecord] = []
