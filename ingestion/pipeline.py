@@ -10,6 +10,7 @@ and returns a list of deal dicts ready for the UI / DB.
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -33,6 +34,29 @@ logger = structlog.get_logger(__name__)
 
 # Score threshold below which we skip the Anthropic visual scoring API call
 _VISUAL_SCORE_MIN_DEAL_SCORE = 50
+
+# ── Persistent background event loop for DB cache operations ──────────────────
+# asyncpg binds its connection pool to whichever event loop first calls
+# create_async_engine().  Calling asyncio.run() repeatedly creates and destroys
+# loops, leaving the pool attached to a dead loop and triggering
+# "Future attached to a different loop" / "Event loop is closed" errors.
+# Solution: one daemon thread runs a single loop forever; all sync→async DB
+# calls are submitted to it via run_coroutine_threadsafe().
+
+_db_loop: "asyncio.AbstractEventLoop | None" = None
+_db_loop_lock = threading.Lock()
+
+
+def _get_db_loop() -> "asyncio.AbstractEventLoop":
+    import asyncio
+    global _db_loop
+    with _db_loop_lock:
+        if _db_loop is None or _db_loop.is_closed():
+            _db_loop = asyncio.new_event_loop()
+            t = threading.Thread(target=_db_loop.run_forever, daemon=True)
+            t.daemon = True
+            t.start()
+    return _db_loop
 
 
 # ── Comp lookup helpers ────────────────────────────────────────────────────────
@@ -60,20 +84,15 @@ _RENTCAST_CACHE_TTL_DAYS = 7
 def _sync_db(coro: Any, default: Any = None) -> Any:
     """Run an async DB coroutine from synchronous pipeline code.
 
-    Uses a thread-pool executor when a loop is already running (APScheduler),
-    falls back to asyncio.run() otherwise.  Always returns `default` on error.
+    Submits the coroutine to a single persistent background event loop so the
+    asyncpg connection pool always runs on the same loop.  Always returns
+    `default` on error.
     """
     import asyncio
     try:
-        try:
-            asyncio.get_running_loop()
-            # A loop is already running — delegate to a worker thread.
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result(timeout=10)
-        except RuntimeError:
-            # No running loop — safe to call asyncio.run() directly.
-            return asyncio.run(coro)
+        loop = _get_db_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result(timeout=10)
     except Exception as exc:
         logger.debug("sync_db_error", error=str(exc))
         return default
