@@ -9,7 +9,6 @@ and returns a list of deal dicts ready for the UI / DB.
 
 from __future__ import annotations
 
-import concurrent.futures
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -695,56 +694,14 @@ def run_pipeline(
     alert_deals:    list[dict] = []
     scored_pairs:   list       = []
     failed_ids:     set        = set()
-    card_cache:     dict       = {}   # canonical_id → completed deal card
-
-    # ── Pre-fetch crime grades for each unique zip (7 max, sequential) ─────────
-    # Done upfront so parallel threads never duplicate a CrimeGrade.org scrape.
-    unique_zips = {r.zip_code for r in scan_result.listings}
-    crime_prefetch: dict[str, CrimeGradeResult] = {}
-    for zc in unique_zips:
-        try:
-            crime_prefetch[zc] = get_crime_grade(zc)
-        except Exception as exc:
-            logger.warning("crime_grade_prefetch_error", zip_code=zc, error=str(exc))
-            crime_prefetch[zc] = CrimeGradeResult(
-                grade="UNKNOWN", passes_gate=False, low_confidence=True
-            )
-
-    # ── Pre-compute neighborhood data for all listings in parallel ──────────────
-    # Per-property HTTP calls (FEMA flood zone, Walk Score) are the bottleneck;
-    # running them concurrently cuts this phase from O(N×latency) to ~O(latency).
-    def _enrich_one(rec: PropertyRecord) -> tuple[str, dict]:
-        crime = crime_prefetch.get(
-            rec.zip_code,
-            CrimeGradeResult(grade="UNKNOWN", passes_gate=False, low_confidence=True),
-        )
-        return rec.canonical_id, _enrich_neighborhood_sync(
-            rec, walkscore_key, maps_key, prefetched_crime=crime
-        )
-
-    logger.info("pipeline_neighborhood_start", count=len(scan_result.listings))
-    neighborhood_map: dict[str, dict] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as _nbhd_pool:
-        _futures = {_nbhd_pool.submit(_enrich_one, rec): rec for rec in scan_result.listings}
-        for _fut in concurrent.futures.as_completed(_futures):
-            try:
-                cid, nbhd = _fut.result()
-                neighborhood_map[cid] = nbhd
-            except Exception as exc:
-                _rec = _futures[_fut]
-                logger.warning("neighborhood_prefetch_error",
-                               address=_rec.address, error=str(exc))
-    logger.info("pipeline_neighborhood_done", count=len(neighborhood_map))
+    card_cache:     dict       = {}   # canonical_id → completed deal card (Fix B)
 
     logger.info("pipeline_start", listings=scan_result.total_listings)
 
     for record in scan_result.listings:
         try:
-            # ── Neighborhood (pre-computed above) ─────────────────────────────
-            neighborhood = neighborhood_map.get(record.canonical_id)
-            if neighborhood is None:
-                logger.warning("neighborhood_missing", address=record.address)
-                continue
+            # ── Neighborhood ──────────────────────────────────────────────────
+            neighborhood = _enrich_neighborhood(record, walkscore_key, maps_key)
 
             if not neighborhood["passed_gates"]:
                 rejected_props.append({

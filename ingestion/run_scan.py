@@ -13,7 +13,6 @@ Called by APScheduler and can also be invoked directly:
 
 from __future__ import annotations
 
-import concurrent.futures
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -76,29 +75,18 @@ def run_scan() -> ScanResult:
     result = ScanResult()
     logger.info("scan_start", scanned_at=result.scanned_at.isoformat())
 
-    # Each task creates its own ApifyClient — httpx.Client is not thread-safe for
-    # concurrent use from multiple threads, so we never share a client across threads.
-    def _run_listings() -> list:
-        try:
-            with ApifyClient() as c:
-                return fetch_listings(c)
-        except ApifyError as exc:
-            raise
+    try:
+        apify = ApifyClient()
+    except ApifyError as exc:
+        msg = f"Cannot initialise Apify client: {exc}"
+        logger.error("scan_apify_init_failed", error=msg)
+        result.errors.append(msg)
+        return result
 
-    def _run_comps() -> list:
-        try:
-            with ApifyClient() as c:
-                return fetch_rental_comps(c)
-        except ApifyError as exc:
-            raise
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        listings_fut = pool.submit(_run_listings)
-        comps_fut    = pool.submit(_run_comps)
-
+    with apify:
         # ── Zillow for-sale listings ──────────────────────────────────────────
         try:
-            result.listings = listings_fut.result()
+            result.listings = fetch_listings(apify)
             logger.info("scan_listings_fetched", count=result.total_listings)
         except Exception as exc:
             msg = f"zillow_listings failed: {exc}"
@@ -107,16 +95,16 @@ def run_scan() -> ScanResult:
 
         # ── Zillow rental comps (LTR) ─────────────────────────────────────────
         try:
-            result.ltr_comps = comps_fut.result()
+            result.ltr_comps = fetch_rental_comps(apify)
             logger.info("scan_ltr_comps_fetched", count=len(result.ltr_comps))
         except Exception as exc:
             msg = f"zillow_rentals failed: {exc}"
             logger.error("scan_actor_error", actor="zillow_rentals", error=msg)
             result.errors.append(msg)
 
-    # ── Furnished Finder MTR comps ────────────────────────────────────────────
-    # TODO: re-enable once a working Apify actor for Furnished Finder is confirmed.
-    logger.info("scan_mtr_comps_skipped", reason="furnished_finder_actor_unverified")
+        # ── Furnished Finder MTR comps ────────────────────────────────────────
+        # TODO: re-enable once a working Apify actor for Furnished Finder is confirmed.
+        logger.info("scan_mtr_comps_skipped", reason="furnished_finder_actor_unverified")
 
     if result.total_listings == 0:
         logger.warning("scan_no_listings_found")
