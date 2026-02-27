@@ -25,6 +25,7 @@ class DataSource(str, Enum):
     ZILLOW_RENTAL     = "zillow_rental"
     FURNISHED_FINDER  = "furnished_finder"
     RENTCAST          = "rentcast"
+    STATIC_MEDIAN     = "static_median"
 
 
 class PropertyType(str, Enum):

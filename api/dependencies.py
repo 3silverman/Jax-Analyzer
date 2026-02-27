@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     smtp_password:    str = ""
     digest_email:     str = ""
     app_base_url:     str = "http://localhost:8000"
+    # Set USE_STATIC_RENT_TABLE=false to re-enable live Rentcast API calls
+    use_static_rent_table: bool = True
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

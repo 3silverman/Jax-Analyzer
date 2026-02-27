@@ -25,12 +25,16 @@ from neighborhood.hospital_proximity import get_hospital_proximity
 from neighborhood.liveability import compute_liveability
 from neighborhood.street_view import get_street_view_urls, score_street_view
 from neighborhood.walk_score import get_walk_score
-from normalization.schema import PropertyRecord, RentalComp
+from normalization.schema import DataSource, PropertyRecord, RentalComp, RentalStrategy
 from scoring.deal_scorer import score_deal
 from scoring.ranker import rank_deals
 from underwriting.calculator import underwrite, Scenario
 
 logger = structlog.get_logger(__name__)
+
+# When true, substitute the static rent table for Rentcast on every property.
+# Set USE_STATIC_RENT_TABLE=false in the environment to re-enable live Rentcast calls.
+_USE_STATIC_RENT_TABLE: bool = os.environ.get("USE_STATIC_RENT_TABLE", "true").lower() != "false"
 
 # Score threshold below which we skip the Anthropic visual scoring API call
 _VISUAL_SCORE_MIN_DEAL_SCORE = 50
@@ -272,6 +276,77 @@ def _try_rentcast_cached(
         logger.debug("rentcast_cache_write_error", error=str(exc))
 
     return rc_comps, ltr_estimate
+
+
+# ── Static rent lookup table ───────────────────────────────────────────────────
+# Per-unit monthly rent estimates keyed on (zip_code, bedrooms_per_unit).
+# Source: market survey data as of 2026-Q1.
+_STATIC_RENT_TABLE: dict[tuple[str, int], float] = {
+    ("32204", 3): 1800.0,
+    ("32205", 2): 1488.0,
+    ("32205", 3): 1769.0,
+    ("32206", 2): 1108.0,
+    ("32206", 3): 1571.0,
+    ("32207", 3): 1989.0,
+    ("32210", 2): 1306.0,
+    ("32210", 3): 1634.0,
+    ("32210", 4): 1847.0,
+    ("32211", 3): 1813.0,
+    ("32217", 3): 1900.0,
+}
+
+# Citywide Jacksonville medians — fallback when zip+bedroom combo is absent
+_CITYWIDE_MEDIANS: dict[int, float] = {
+    2: 1221.0,
+    3: 1844.0,
+    4: 2184.0,
+}
+
+
+def _try_static_rent_table(
+    record: PropertyRecord,
+) -> tuple[list[RentalComp], float | None]:
+    """Return a synthetic LTR comp from the static rent lookup table.
+
+    Never calls any external API. Keyed on (zip_code, beds_per_unit).
+    Falls back to citywide Jacksonville medians when the combo is missing,
+    and to $1,500 when even the bedroom count has no citywide median.
+
+    Returns (comps, ltr_estimate) — same signature as _try_rentcast_cached.
+    ltr_estimate is rate * num_units (total property monthly rent).
+    """
+    num_units     = record.num_units or 1
+    beds_per_unit = max(1, round((record.beds or num_units) / num_units))
+
+    rate = _STATIC_RENT_TABLE.get((record.zip_code, beds_per_unit))
+    if rate is None:
+        rate = _CITYWIDE_MEDIANS.get(beds_per_unit, 1500.0)
+        logger.info(
+            "static_rent_citywide_fallback",
+            zip_code=record.zip_code,
+            beds_per_unit=beds_per_unit,
+            rate=rate,
+        )
+    else:
+        logger.debug(
+            "static_rent_table_hit",
+            zip_code=record.zip_code,
+            beds_per_unit=beds_per_unit,
+            rate=rate,
+        )
+
+    comp = RentalComp(
+        canonical_id=f"static_{record.zip_code}_{beds_per_unit}",
+        source=DataSource.STATIC_MEDIAN,
+        source_id=f"static_{record.zip_code}_{beds_per_unit}",
+        scraped_at=datetime.now(timezone.utc),
+        address=f"static median {record.zip_code} {beds_per_unit}br",
+        zip_code=record.zip_code,
+        beds=beds_per_unit,
+        rental_strategy=RentalStrategy.LTR,
+        monthly_rate=rate,
+    )
+    return [comp], rate * num_units
 
 
 # ── Airbnb STR comps ───────────────────────────────────────────────────────────
@@ -743,9 +818,13 @@ def run_pipeline(
             mtr_comps   = _mtr_comps_for(record, scan_result.mtr_comps)
             apify_count = len(ltr_comps) + len(mtr_comps)
 
-            # Supplement with Rentcast comps when Apify is thin (< 3 total).
-            # Cache prevents repeat API calls for the same listing day-over-day.
-            rc_comps, rentcast_ltr = _try_rentcast_cached(record, apify_count)
+            # Supplement with rent comps when Apify is thin (< 3 total).
+            # USE_STATIC_RENT_TABLE bypasses Rentcast with a hardcoded lookup;
+            # set USE_STATIC_RENT_TABLE=false in env to re-enable live Rentcast.
+            if _USE_STATIC_RENT_TABLE:
+                rc_comps, rentcast_ltr = _try_static_rent_table(record)
+            else:
+                rc_comps, rentcast_ltr = _try_rentcast_cached(record, apify_count)
             if rc_comps:
                 ltr_comps = _dedupe_comps_by_address(ltr_comps + rc_comps)
 
@@ -874,7 +953,10 @@ def run_pipeline(
                 mtr_comps    = _mtr_comps_for(rec, scan_result.mtr_comps)
                 apify_count  = len(ltr_comps) + len(mtr_comps)
                 # Cache hit expected here — all properties were processed in first pass.
-                rc_comps, rentcast_ltr = _try_rentcast_cached(rec, apify_count)
+                if _USE_STATIC_RENT_TABLE:
+                    rc_comps, rentcast_ltr = _try_static_rent_table(rec)
+                else:
+                    rc_comps, rentcast_ltr = _try_rentcast_cached(rec, apify_count)
                 if rc_comps:
                     ltr_comps = _dedupe_comps_by_address(ltr_comps + rc_comps)
                 all_comps    = ltr_comps + mtr_comps
