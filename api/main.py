@@ -14,6 +14,7 @@ import json
 import socket
 import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import structlog
 from fastapi import FastAPI
@@ -220,7 +221,7 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "canonical_id":  cid,
                     "source":        "zillow_sale",
                     "source_id":     "",
-                    "scraped_at":    None,
+                    "scraped_at":    datetime.now(timezone.utc),
                     "address":       rej.get("address", ""),
                     "city":          "Jacksonville",
                     "state":         "FL",
