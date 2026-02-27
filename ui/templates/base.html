@@ -107,15 +107,41 @@
       <a href="/assumptions" class="{{ 'active' if active_tab == 'assumptions' else '' }}">Assumptions</a>
       <a href="/audit"       class="{{ 'active' if active_tab == 'audit'       else '' }}">Audit Log</a>
     </nav>
-    <form action="/scan/run" method="post" style="margin:0" class="run-scan-btn">
-      <button class="btn btn-outline btn-sm" style="color:#a0aec0;border-color:#374a6d">Run Scan</button>
-    </form>
+    <button id="run-scan-btn" class="btn btn-outline btn-sm run-scan-btn"
+            style="color:#a0aec0;border-color:#374a6d"
+            onclick="triggerScan(this)">Run Scan</button>
     <button class="hamburger" onclick="document.getElementById('main-nav').classList.toggle('open')" aria-label="Toggle navigation">
       <span></span><span></span><span></span>
     </button>
   </header>
+  <div id="scan-toast" style="display:none;position:fixed;bottom:24px;right:24px;
+       background:#1a2744;color:#fff;padding:12px 20px;border-radius:8px;
+       font-size:13px;font-weight:600;box-shadow:0 4px 12px rgba(0,0,0,0.25);
+       z-index:9999;transition:opacity 0.3s"></div>
   <div class="container">
     {% block content %}{% endblock %}
   </div>
+  <script>
+    function triggerScan(btn) {
+      btn.disabled = true;
+      btn.textContent = 'Starting…';
+      fetch('/scan/run', { method: 'POST', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function() { showToast('Scan started — check Audit Log for progress.', '#276749'); })
+        .catch(function(err) { showToast('Failed to start scan (' + err + ')', '#c53030'); })
+        .finally(function() { btn.disabled = false; btn.textContent = 'Run Scan'; });
+    }
+    function showToast(msg, bg) {
+      var t = document.getElementById('scan-toast');
+      t.textContent = msg;
+      t.style.background = bg || '#1a2744';
+      t.style.display = 'block';
+      t.style.opacity = '1';
+      setTimeout(function() {
+        t.style.opacity = '0';
+        setTimeout(function() { t.style.display = 'none'; }, 300);
+      }, 4000);
+    }
+  </script>
 </body>
 </html>
