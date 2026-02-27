@@ -22,20 +22,12 @@ logger = structlog.get_logger(__name__)
 
 # ── Actor configuration ────────────────────────────────────────────────────────
 
-_RENTAL_SEARCH_URLS: list[str] = [
-    "https://www.zillow.com/jacksonville-fl-32204/rentals/?searchQueryState=%7B%22filterState%22%3A%7B%22fr%22%3A%7B%22value%22%3Atrue%7D%2C%22fsba%22%3A%7B%22value%22%3Afalse%7D%2C%22nc%22%3A%7B%22value%22%3Afalse%7D%2C%22fsbo%22%3A%7B%22value%22%3Afalse%7D%2C%22cmsn%22%3A%7B%22value%22%3Afalse%7D%2C%22auc%22%3A%7B%22value%22%3Afalse%7D%2C%22fore%22%3A%7B%22value%22%3Afalse%7D%7D%7D",
-    "https://www.zillow.com/jacksonville-fl-32205/rentals/",
-    "https://www.zillow.com/jacksonville-fl-32206/rentals/",
-    "https://www.zillow.com/jacksonville-fl-32207/rentals/",
-    "https://www.zillow.com/jacksonville-fl-32210/rentals/",
-    "https://www.zillow.com/jacksonville-fl-32211/rentals/",
-    "https://www.zillow.com/jacksonville-fl-32217/rentals/",
-]
-
 _ACTOR_INPUT: dict[str, Any] = {
-    "startUrls": [{"url": url} for url in _RENTAL_SEARCH_URLS],
-    "maxItems":  800,
-    "proxy": {"useApifyProxy": True},
+    "zipCodes":        ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
+    "forSaleByAgent":  False,
+    "forSaleByOwner":  False,
+    "forRent":         True,
+    "sold":            False,
 }
 
 

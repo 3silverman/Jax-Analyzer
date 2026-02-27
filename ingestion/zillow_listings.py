@@ -26,18 +26,24 @@ logger = structlog.get_logger(__name__)
 # ── Actor configuration ────────────────────────────────────────────────────────
 
 _MF_ACTOR_INPUT: dict[str, Any] = {
-    "zipCodes": ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
-    "type": "for_sale",
-    "maxItems": 500,
-    "proxy": {"useApifyProxy": True},
+    "zipCodes":        ["32204", "32205", "32206", "32207", "32210", "32211", "32217"],
+    "forSaleByAgent":  True,
+    "forSaleByOwner":  True,
+    "forRent":         False,
+    "sold":            False,
+    "priceMin":        100000,
+    "priceMax":        600000,
 }
 
 # SFH input covers priority 4 zips only to control volume; we only care about ADU properties
 _SFH_ACTOR_INPUT: dict[str, Any] = {
-    "zipCodes": ["32204", "32205", "32206", "32207"],
-    "type": "for_sale",
-    "maxItems": 200,
-    "proxy": {"useApifyProxy": True},
+    "zipCodes":        ["32204", "32205", "32206", "32207"],
+    "forSaleByAgent":  True,
+    "forSaleByOwner":  True,
+    "forRent":         False,
+    "sold":            False,
+    "priceMin":        100000,
+    "priceMax":        500000,
 }
 
 # Property types that should pass through without filtering
