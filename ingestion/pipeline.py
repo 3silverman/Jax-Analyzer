@@ -428,10 +428,14 @@ def _try_airbnb_str_comps(
                 )
                 await session.commit()
 
-        try:
-            _sync_db(_write_cache())
-        except Exception as exc:
-            logger.debug("airbnb_cache_write_error", error=str(exc))
+        # Only cache results that have actual comps — never persist zeros.
+        # A comp_count=0 entry would be served as a permanent cache hit and
+        # prevent the actor from being retried on the next pipeline run.
+        if result.comp_count > 0:
+            try:
+                _sync_db(_write_cache())
+            except Exception as exc:
+                logger.debug("airbnb_cache_write_error", error=str(exc))
 
         return result, result.str_validated
 

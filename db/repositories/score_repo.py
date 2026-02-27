@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 import json
+from datetime import datetime
 from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class _DatetimeEncoder(json.JSONEncoder):
+    """JSON encoder that serialises datetime objects to ISO-8601 strings."""
+    def default(self, obj: object) -> object:
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 async def insert_deal_score(session: AsyncSession, ds: dict[str, Any]) -> None:
@@ -35,8 +44,8 @@ async def insert_deal_score(session: AsyncSession, ds: dict[str, Any]) -> None:
         "dscr":                  ds.get("dscr"),
         "cash_on_cash":          ds.get("cash_on_cash"),
         "why_scored_high":       ds.get("why_scored_high"),
-        "assumptions_snapshot":  json.dumps(ds.get("assumptions_snapshot") or {}),
-        "deal_card_json":        json.dumps(ds.get("deal_card_json") or {}),
+        "assumptions_snapshot":  json.dumps(ds.get("assumptions_snapshot") or {}, cls=_DatetimeEncoder),
+        "deal_card_json":        json.dumps(ds.get("deal_card_json") or {}, cls=_DatetimeEncoder),
     })
 
 

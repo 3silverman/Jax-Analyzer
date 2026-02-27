@@ -26,7 +26,8 @@ async def get_cached_str_comps(
             "estimated_occupancy, gross_monthly, net_monthly, confidence, "
             "str_validated, fetched_at "
             "FROM airbnb_comp_cache "
-            "WHERE zip_code = :zip AND bedrooms = :beds AND week_number = :week"
+            "WHERE zip_code = :zip AND bedrooms = :beds AND week_number = :week "
+            "AND comp_count > 0"
         ),
         {"zip": zip_code, "beds": bedrooms, "week": week_number},
     )
