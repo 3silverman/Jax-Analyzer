@@ -495,27 +495,38 @@ async def audit_log(request: Request):
 
 @router.get("/analytics", response_class=HTMLResponse)
 async def analytics_page(request: Request):
+    # ── Core pipeline metrics (properties / neighborhoods / scores) ────────────
+    # Fetched independently so an outcomes-table error never zeroes these out.
     analytics: dict[str, Any] = {}
     try:
         from db.connection import get_session
         from db.repositories.score_repo import get_analytics_summary
-        from db.repositories.outcome_repo import get_funnel_metrics
         async with get_session() as session:
-            summary = await get_analytics_summary(session)
-            funnel  = await get_funnel_metrics(session)
-        analytics = {**summary, **funnel}
+            analytics = await get_analytics_summary(session)
     except Exception as exc:
-        logger.warning("db_analytics_fallback", error=str(exc))
-        # Build rough metrics from in-memory store
-        store = get_store()
+        logger.warning("db_analytics_summary_fallback", error=str(exc))
         deals = _deals_from_store()
         analytics = {
-            "total_active":  len(deals),
-            "passed_gates":  len(deals),
+            "total_active":   len(deals),
+            "passed_gates":   len(deals),
             "scored_60_plus": sum(1 for d in deals if d.get("deal_score", 0) >= 60),
-            "high_priority": sum(1 for d in deals if d.get("is_high_priority")),
-            "pursued": 0, "offer_made": 0, "closed": 0, "rejected": 0,
+            "score_85_plus":  sum(1 for d in deals if d.get("deal_score", 0) >= 85),
+            "score_40_to_59": sum(1 for d in deals if 40 <= d.get("deal_score", 0) < 60),
+            "score_under_40": sum(1 for d in deals if 0 < d.get("deal_score", 0) < 40),
+            "high_priority":  sum(1 for d in deals if d.get("is_high_priority")),
         }
+
+    # ── Outcome funnel metrics (independent — failure gives safe zeros) ────────
+    try:
+        from db.connection import get_session
+        from db.repositories.outcome_repo import get_funnel_metrics
+        async with get_session() as session:
+            analytics.update(await get_funnel_metrics(session))
+    except Exception as exc:
+        logger.warning("db_analytics_funnel_fallback", error=str(exc))
+        for key in ("pursued", "offer_made", "closed", "rejected", "under_contract"):
+            analytics.setdefault(key, 0)
+
     return _tmpl(request, "analytics.html", {
         "analytics": analytics,
         "active_tab": "analytics",

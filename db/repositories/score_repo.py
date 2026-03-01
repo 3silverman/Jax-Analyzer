@@ -112,26 +112,36 @@ async def mark_alert_sent(session: AsyncSession, score_id: str) -> None:
 
 
 async def get_analytics_summary(session: AsyncSession) -> dict:
-    """Return funnel metrics for the analytics page."""
+    """Return pipeline funnel and score-distribution metrics for the analytics page.
+
+    Does NOT join outcomes — those metrics are fetched separately by
+    get_funnel_metrics() so a missing/empty outcomes table can never break
+    the core pipeline stats.
+    """
     result = await session.execute(text("""
         SELECT
-            COUNT(*) FILTER (WHERE p.status = 'active') AS total_active,
-            COUNT(DISTINCT ns.property_id) FILTER (WHERE ns.passed_gates = TRUE) AS passed_gates,
-            COUNT(DISTINCT ds.property_id) FILTER (WHERE ds.deal_score >= 60) AS scored_60_plus,
-            COUNT(DISTINCT ds.property_id) FILTER (WHERE ds.is_high_priority = TRUE) AS high_priority,
-            COUNT(DISTINCT o.property_id) FILTER (WHERE o.outcome = 'pursued') AS pursued,
-            COUNT(DISTINCT o.property_id) FILTER (WHERE o.outcome = 'offer_made') AS offer_made,
-            COUNT(DISTINCT o.property_id) FILTER (WHERE o.outcome = 'closed') AS closed
+            COUNT(DISTINCT p.canonical_id)
+                FILTER (WHERE p.status = 'active')                          AS total_active,
+            COUNT(DISTINCT ns.property_id)
+                FILTER (WHERE ns.passed_gates = TRUE)                       AS passed_gates,
+            COUNT(DISTINCT ds.property_id)
+                FILTER (WHERE ds.deal_score >= 60)                          AS scored_60_plus,
+            COUNT(DISTINCT ds.property_id)
+                FILTER (WHERE ds.deal_score >= 85 AND ds.is_high_priority)  AS score_85_plus,
+            COUNT(DISTINCT ds.property_id)
+                FILTER (WHERE ds.deal_score >= 40 AND ds.deal_score < 60)   AS score_40_to_59,
+            COUNT(DISTINCT ds.property_id)
+                FILTER (WHERE ds.deal_score > 0  AND ds.deal_score < 40)    AS score_under_40,
+            COUNT(DISTINCT ds.property_id)
+                FILTER (WHERE ds.is_high_priority = TRUE)                   AS high_priority
         FROM properties p
         LEFT JOIN neighborhood_scores ns ON ns.property_id = p.canonical_id
         LEFT JOIN (
-            SELECT DISTINCT ON (property_id) property_id, deal_score, is_high_priority
-            FROM deal_scores ORDER BY property_id, scored_at DESC
+            SELECT DISTINCT ON (property_id)
+                property_id, deal_score, is_high_priority
+            FROM deal_scores
+            ORDER BY property_id, scored_at DESC
         ) ds ON ds.property_id = p.canonical_id
-        LEFT JOIN (
-            SELECT DISTINCT ON (property_id) property_id, outcome
-            FROM outcomes ORDER BY property_id, created_at DESC
-        ) o ON o.property_id = p.canonical_id
     """))
     row = result.mappings().first()
     return dict(row) if row else {}

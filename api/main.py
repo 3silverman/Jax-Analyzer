@@ -138,28 +138,33 @@ async def _run_daily_scan() -> None:
 
 async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
     """Write pipeline output to Supabase. Called from the daily scan job."""
+    from db.connection import get_session
+    from db.repositories import (
+        property_repo,
+        neighborhood_repo,
+        score_repo,
+        scan_log_repo,
+    )
+
+    all_deals = (
+        pipeline_out.get("inbox", []) +
+        pipeline_out.get("alerts", []) +
+        pipeline_out.get("scored_low", [])
+    )
+    rejected  = pipeline_out.get("rejected", [])
+    summary   = pipeline_out.get("scan_summary", {})
+
+    # ── Scan log: start ───────────────────────────────────────────────────────
+    scan_id = None
     try:
-        from db.connection import get_session
-        from db.repositories import (
-            property_repo,
-            neighborhood_repo,
-            score_repo,
-            scan_log_repo,
-        )
-
-        all_deals = (
-            pipeline_out.get("inbox", []) +
-            pipeline_out.get("alerts", []) +
-            pipeline_out.get("scored_low", [])
-        )
-        rejected  = pipeline_out.get("rejected", [])
-        summary   = pipeline_out.get("scan_summary", {})
-
         async with get_session() as session:
             scan_id = await scan_log_repo.start_scan(session)
+    except Exception as exc:
+        logger.warning("scan_log_start_failed", error=str(exc))
 
-        # ── Transaction 1: properties + neighborhoods (committed before scores) ──
-        # Isolated so that a score-write failure can never roll back property rows.
+    # ── Transaction 1: properties + neighborhoods ──────────────────────────────
+    # Committed first so a score-write failure can never roll back property rows.
+    try:
         async with get_session() as session:
             for card in all_deals:
                 cid = card.get("canonical_id")
@@ -212,7 +217,7 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "maps_link":                card.get("maps_link"),
                 })
 
-            # Failed-gate properties also go in this transaction
+            # Failed-gate properties
             for rej in rejected:
                 cid = rej.get("canonical_id")
                 if not cid:
@@ -242,9 +247,16 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "passed_gates":      False,
                     "failed_gate_reasons": rej.get("failed_gates", []),
                 })
-        # Transaction 1 committed — properties + neighborhoods are now durable.
+    except Exception as exc:
+        logger.error("db_persist_properties_failed", error=str(exc))
+        # Without property rows the FK on deal_scores can't be satisfied; abort.
+        return
 
-        # ── Transaction 2: deal scores (scored deals only) ────────────────────
+    # ── Transaction 2: deal scores for ALL properties ──────────────────────────
+    # Gate-passing deals get full scored rows.
+    # Failed-gate properties get a zero-score row so every property_id has
+    # a deal_scores entry — required for analytics counts to be accurate.
+    try:
         async with get_session() as session:
             for card in all_deals:
                 cid = card.get("canonical_id")
@@ -269,21 +281,52 @@ async def _persist_pipeline_results(pipeline_out: dict, scan_result) -> None:
                     "deal_card_json":        deal_card_json,
                 })
 
-        # Complete the scan log
-        async with get_session() as session:
-            await scan_log_repo.complete_scan(
-                session,
-                scan_id=scan_id,
-                properties_scanned=summary.get("total_scanned", 0),
-                passed_gates=summary.get("passed_gates", 0),
-                alerts_triggered=summary.get("alerts", 0),
-                errors=summary.get("errors", []),
-            )
-
-        logger.info("db_persist_complete", deals=len(all_deals), rejected=len(rejected))
-
+            for rej in rejected:
+                cid = rej.get("canonical_id")
+                if not cid:
+                    continue
+                await score_repo.insert_deal_score(session, {
+                    "property_id":           cid,
+                    "return_score":          0,
+                    "risk_score":            0,
+                    "confidence_score":      0,
+                    "deal_score":            0,
+                    "is_high_priority":      False,
+                    "alert_sent":            False,
+                    "alert_reasons":         [],
+                    "conservative_cash_flow": None,
+                    "best_strategy":         None,
+                    "dscr":                  None,
+                    "cash_on_cash":          None,
+                    "why_scored_high":       None,
+                    "assumptions_snapshot":  {},
+                    "deal_card_json":        rej,
+                })
     except Exception as exc:
-        logger.error("db_persist_failed", error=str(exc))
+        logger.error("db_persist_scores_failed", error=str(exc))
+
+    # ── Scan log: complete ────────────────────────────────────────────────────
+    # Isolated — a scan-log failure must not surface as a score-persist failure.
+    if scan_id:
+        try:
+            async with get_session() as session:
+                await scan_log_repo.complete_scan(
+                    session,
+                    scan_id=scan_id,
+                    properties_scanned=summary.get("total_scanned", 0),
+                    passed_gates=summary.get("passed_gates", 0),
+                    alerts_triggered=summary.get("alerts", 0),
+                    errors=summary.get("errors", []),
+                )
+        except Exception as exc:
+            logger.warning("scan_log_complete_failed", error=str(exc))
+
+    logger.info(
+        "db_persist_complete",
+        scored=len(all_deals),
+        rejected_zero_score=len(rejected),
+        total=len(all_deals) + len(rejected),
+    )
 
 
 async def _send_daily_digest() -> None:

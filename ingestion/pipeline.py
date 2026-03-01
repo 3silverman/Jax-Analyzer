@@ -281,26 +281,38 @@ def _try_rentcast_cached(
 
 # ── Static rent lookup table ───────────────────────────────────────────────────
 # Per-unit monthly rent estimates keyed on (zip_code, bedrooms_per_unit).
-# Source: market survey data as of 2026-Q1.
+# Calibrated from market research Feb 2026 (Zillow, Apartments.com, Zumper).
+# Re-verify on the ground in Jacksonville before relying on for live deals.
 _STATIC_RENT_TABLE: dict[tuple[str, int], float] = {
-    ("32204", 3): 1800.0,
-    ("32205", 2): 1488.0,
-    ("32205", 3): 1769.0,
-    ("32206", 2): 1108.0,
-    ("32206", 3): 1571.0,
-    ("32207", 3): 1989.0,
-    ("32210", 2): 1306.0,
-    ("32210", 3): 1634.0,
-    ("32210", 4): 1847.0,
-    ("32211", 3): 1813.0,
-    ("32217", 3): 1900.0,
+    # Riverside (32204)
+    ("32204", 1): 1100.0,
+    ("32204", 2): 1450.0,
+    ("32204", 3): 1750.0,
+    ("32204", 4): 2100.0,
+    # Avondale (32205)
+    ("32205", 1): 1100.0,
+    ("32205", 2): 1500.0,
+    ("32205", 3): 1800.0,
+    ("32205", 4): 2150.0,
+    # Springfield (32206)
+    ("32206", 1): 1050.0,
+    ("32206", 2): 1450.0,
+    ("32206", 3): 1700.0,
+    ("32206", 4): 2050.0,
+    # San Marco (32207)
+    ("32207", 1): 1050.0,
+    ("32207", 2): 1400.0,
+    ("32207", 3): 1700.0,
+    ("32207", 4): 2050.0,
 }
 
-# Citywide Jacksonville medians — fallback when zip+bedroom combo is absent
+# Citywide Jacksonville medians — fallback when zip+bedroom combo is absent.
+# Derived as the average across the four target zips above.
 _CITYWIDE_MEDIANS: dict[int, float] = {
-    2: 1221.0,
-    3: 1844.0,
-    4: 2184.0,
+    1: 1075.0,
+    2: 1450.0,
+    3: 1738.0,
+    4: 2088.0,
 }
 
 
