@@ -352,15 +352,28 @@ def _try_static_rent_table(
 
 # ── Airbnb STR comps ───────────────────────────────────────────────────────────
 
+# Per-run in-memory STR comp cache.
+# Keyed on (zip_code, beds_per_unit) — stores the StrCompResult (or None)
+# from the first call so subsequent properties with the same combination never
+# hit the Apify actor a second time within the same pipeline run.
+# Cleared by run_pipeline() at the top of every invocation.
+_run_str_cache: dict[tuple[str, int], "StrCompResult | None"] = {}
+
+
 def _try_airbnb_str_comps(
     record: PropertyRecord,
 ) -> "tuple[StrCompResult | None, bool]":
     """
-    Fetch Airbnb STR comps for a property, with weekly DB cache.
+    Fetch Airbnb STR comps for a property, with two cache layers.
 
-    Cache key: (zip_code, beds_per_unit, ISO-week-number).
-    On a cache hit the actor is NOT called — the same week's results are reused
-    across all properties with the same zip + bed count.
+    Layer 1 — in-memory run cache (_run_str_cache):
+      Keyed on (zip_code, beds_per_unit).  Prevents calling the actor more
+      than once per unique combination per pipeline run, even when the DB cache
+      returns a miss (e.g. because the previous result had comp_count=0).
+
+    Layer 2 — weekly DB cache (airbnb_comp_cache):
+      Keyed on (zip_code, beds_per_unit, ISO-week-number).  Only populated for
+      results with comp_count > 0 so stale zeros never block a retry next week.
 
     Returns:
         (StrCompResult | None, str_validated)
@@ -381,7 +394,13 @@ def _try_airbnb_str_comps(
         beds_per_unit = max(1, round(beds / num_units))
         week_number   = datetime.now(tz=timezone.utc).isocalendar()[1]
 
-        # ── Cache check ───────────────────────────────────────────────────────
+        # ── Layer 1: in-memory run cache ─────────────────────────────────────
+        run_key = (record.zip_code, beds_per_unit)
+        if run_key in _run_str_cache:
+            result = _run_str_cache[run_key]
+            return (result, result.str_validated) if result else (None, False)
+
+        # ── Layer 2: weekly DB cache ─────────────────────────────────────────
         async def _check_cache():
             async with get_session() as session:
                 return await get_cached_str_comps(
@@ -405,10 +424,15 @@ def _try_airbnb_str_comps(
                 confidence=cached["confidence"],
                 str_validated=bool(cached["str_validated"]),
             )
+            _run_str_cache[run_key] = result
             return result, result.str_validated
 
         # ── Live actor call ───────────────────────────────────────────────────
         result = get_str_comps(record.zip_code, beds_per_unit)
+
+        # Always populate the run cache so we never call the actor twice for
+        # the same (zip, bedrooms) within a single pipeline pass.
+        _run_str_cache[run_key] = result if result.comp_count > 0 else None
 
         async def _write_cache():
             async with get_session() as session:
@@ -428,9 +452,7 @@ def _try_airbnb_str_comps(
                 )
                 await session.commit()
 
-        # Only cache results that have actual comps — never persist zeros.
-        # A comp_count=0 entry would be served as a permanent cache hit and
-        # prevent the actor from being retried on the next pipeline run.
+        # Only persist to DB cache when there are real comps — never cache zeros.
         if result.comp_count > 0:
             try:
                 _sync_db(_write_cache())
@@ -774,6 +796,9 @@ def run_pipeline(
     """
     if assumptions is None:
         assumptions = {}
+
+    # Reset the per-run STR comp cache so each pipeline invocation starts fresh.
+    _run_str_cache.clear()
 
     # ── Live VA rate ───────────────────────────────────────────────────────────
     va_rate_result = fetch_va_rate()
